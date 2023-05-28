@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>MLOps | Wit's Blog</title><link>https://witsblog.github.io/tag/mlops/</link><atom:link href="https://witsblog.github.io/tag/mlops/index.xml" rel="self" type="application/rss+xml"/><description>MLOps</description><generator>Wowchemy (https://wowchemy.com)</generator><language>en-us</language><lastBuildDate>Sun, 10 Oct 2021 00:00:00 +0000</lastBuildDate><image><url>https://witsblog.github.io/media/icon_hu66cf44b0d2eab4dae9de00f68d847da7_1567_512x512_fill_lanczos_center_3.png</url><title>MLOps</title><link>https://witsblog.github.io/tag/mlops/</link></image><item><title>Continuous Training with TFX and Kubeflow Pipelines</title><link>https://witsblog.github.io/post/013_tfx_google_ai_platform/</link><pubDate>Sun, 10 Oct 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/013_tfx_google_ai_platform/</guid><description>&lt;p>In this post I will be exploring the TFX and its integration with Kubeflow Pipelines on Google AI Platform.&lt;/p>
+&lt;p>This post is kind of my summarization for my learning purpose.&lt;/p>
+&lt;h2 id="1-dataset">1. Dataset&lt;/h2>
+&lt;h2 id="2-create-clusters">2. Create Clusters&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/04.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/05.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/06.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="3-understanding-tfx-pipelines">3. Understanding TFX Pipelines&lt;/h2>
+&lt;p>In order to understand TFX pipelines, we need to understand some keywords. For full tutorial, refer to TensorFlow&amp;rsquo;s article &lt;a href="https://www.tensorflow.org/tfx/guide/understanding_tfx_pipelines" target="_blank" rel="noopener">here&lt;/a>.&lt;/p>
+&lt;h3 id="artifact">Artifact&lt;/h3>
+&lt;p>Artifacts are the output of the steps in a TFX pipeline. They can be used by subsequent steps in the pipeline.&lt;/p>
+&lt;p>Artifacts must be stongly typed with an &lt;strong>artifact type&lt;/strong> registered in the &lt;a href="https://www.tensorflow.org/tfx/guide/mlmd" target="_blank" rel="noopener">ML Metadata&lt;/a> store. This point is not very clear yet; I need to research and will come back to expand more on this later.&lt;/p>
+&lt;p>Questions&lt;/p>
+&lt;ul>
+&lt;li>Where does artifact get stored?&lt;/li>
+&lt;li>What needs to be changed if we run the pipeline on a Cloud?&lt;/li>
+&lt;/ul>
+&lt;h3 id="parameter">Parameter&lt;/h3>
+&lt;p>Parameters are something that we can set through configuration, instead of hard coding; they are just like the hyperparameters of a ML/DL model.&lt;/p>
+&lt;h3 id="component">Component&lt;/h3>
+&lt;p>Component is an implementation of the task in our pipeline. Components in TFX are composed of&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Component specification&lt;/strong>: This defines the component&amp;rsquo;s input and output artifacts, and component&amp;rsquo;s parameters.&lt;/li>
+&lt;li>&lt;strong>Executor&lt;/strong>: This implements the real work of a step in the pipeline.&lt;/li>
+&lt;li>&lt;strong>Component interface&lt;/strong>: This packages the component specification and executor for use in a pipeline. (This is not very clear.)&lt;/li>
+&lt;/ul>
+&lt;p>Questions&lt;/p>
+&lt;ul>
+&lt;li>Where does the component get run?&lt;/li>
+&lt;li>Do components run in the same environment? Same OS and same dependencies?&lt;/li>
+&lt;li>What if each component requires different dependencies?&lt;/li>
+&lt;/ul>
+&lt;h3 id="pipeline">Pipeline&lt;/h3>
+&lt;p>TensorFlow says that a TFX pipeline is a &lt;em>&lt;strong>portable&lt;/strong>&lt;/em> implementation of an ML workflow, as it can be run on different ochestrators, such as: Apache Airflow, Apache Beam, and Kubeflow Pipelines.&lt;/p>
+&lt;p>First, we build a pipeline, which is of type &lt;code>tfx.orchestration.pipeline.Pipeline&lt;/code>:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">pipeline&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">def&lt;/span> &lt;span class="nf">_create_pipeline&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="n">pipeline&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Pipeline&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;&amp;#34;&amp;#34;
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="s2"> &amp;#34;&amp;#34;&amp;#34;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">pass&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>To select a different ochestration tool, we need to import from &lt;code>tfx.orchestration&lt;/code> module.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Airflow&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.airflow.airflow_dag_runner&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">AirflowDagRunner&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.airflow.airflow_dag_runner&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">AirflowPipelineConfig&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">DAG&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">AirflowDagRunner&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">AirflowPipelineConfig&lt;/span>&lt;span class="p">())&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">run&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">_create_pipeline&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Kubeflow&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.kubeflow&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">kubeflow_dag_runner&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">kubeflow_dag_runner&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">KubeflowDagRunner&lt;/span>&lt;span class="p">()&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">run&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">create_pipeline&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h2 id="4-tfx-custom-components">4. TFX Custom Components&lt;/h2>
+&lt;p>Understanding the custom components will get us far! Refer to TensorFlow&amp;rsquo;s article &lt;a href="https://www.tensorflow.org/tfx/guide/understanding_custom_components" target="_blank" rel="noopener">here&lt;/a>.&lt;/p>
+&lt;h3 id="tfx-components-at-runtime">TFX components at runtime&lt;/h3>
+&lt;blockquote>
+&lt;p>When a pipeline runs a TFX component, the component is executed in three phases:&lt;/p>
+&lt;ol>
+&lt;li>First, the Driver uses the component specification to retrieve the required artifacts from the metadata store and pass them into the component.&lt;/li>
+&lt;li>Next, the Executor performs the component&amp;rsquo;s work.&lt;/li>
+&lt;li>Then the Publisher uses the component specification and the results from the executor to store the component&amp;rsquo;s outputs in the metadata store.&lt;/li>
+&lt;/ol>
+&lt;/blockquote>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/component.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h3 id="types-of-custom-components">Types of custom components&lt;/h3>
+&lt;ol>
+&lt;li>
+&lt;p>&lt;strong>Python function-based&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>The specification is completely defined in the Python code.&lt;/li>
+&lt;li>The function&amp;rsquo;s arguments with type annotations describe input artifact, output artifact, and parameters.&lt;/li>
+&lt;li>The function&amp;rsquo;s body defines the component&amp;rsquo;s executor.&lt;/li>
+&lt;li>The component interface is dedined by adding &lt;code>@component&lt;/code> decorator.&lt;/li>
+&lt;/ul>
+&lt;br>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="nd">@component&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">def&lt;/span> &lt;span class="nf">MyComponent&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">model&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">InputArtifact&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">Model&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">output&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">OutputArtifact&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">Model&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">threshold&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">Parameter&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="mi">10&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">)&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="n">OutputDict&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">accuracy&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="nb">float&lt;/span>&lt;span class="p">):&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;&amp;#34;&amp;#34;
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="s2"> &amp;#34;&amp;#34;&amp;#34;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">pass&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;/li>
+&lt;li>
+&lt;p>&lt;strong>Container-based&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>This is suitable for building a component with custom runtime environment and dependencies.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>
+&lt;p>&lt;strong>Fully custom&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>This is for building a component that is not in the built-in TFX standard components.&lt;/li>
+&lt;li>It lets us build a component by implementing a custom &lt;em>component specification&lt;/em>, &lt;em>executor&lt;/em>, and &lt;em>component interface&lt;/em> classes.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ol>
+&lt;h2 id="5-code">5. Code&lt;/h2>
+&lt;br>
+&lt;h2 id="6-pipeline-dashboard">6. Pipeline Dashboard&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/10.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/11.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/13.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/15_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/16_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/17_1.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/17_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="7-dataflow">7. Dataflow&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/19.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/20.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/21.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/22.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/24.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="my-thoughts">My Thoughts&lt;/h2>
+&lt;ul>
+&lt;li>TFX seems to be built around TensorFlow. Not very sure if it’s gonna work with other DL/ML libraries without heavily modifying the TFX components. But if we are in a Google Cloud/TensorFlow ecosystem, stick with it!&lt;/li>
+&lt;li>Unlike TFX, &lt;a href="https://mlflow.org/" target="_blank" rel="noopener">MLFlow&lt;/a> seems to be more general and more open to other DL/ML libraries.&lt;/li>
+&lt;/ul>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://www.tensorflow.org/tfx/tutorials" target="_blank" rel="noopener">https://www.tensorflow.org/tfx/tutorials&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://www.tensorflow.org/tfx/guide/mlmd" target="_blank" rel="noopener">https://www.tensorflow.org/tfx/guide/mlmd&lt;/a>&lt;/li>
+&lt;/ul></description></item></channel></rss>

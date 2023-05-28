@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Data Science | Wit's Blog</title><link>https://witsblog.github.io/tag/data-science/</link><atom:link href="https://witsblog.github.io/tag/data-science/index.xml" rel="self" type="application/rss+xml"/><description>Data Science</description><generator>Wowchemy (https://wowchemy.com)</generator><language>en-us</language><lastBuildDate>Thu, 07 Oct 2021 00:00:00 +0000</lastBuildDate><image><url>https://witsblog.github.io/media/icon_hu66cf44b0d2eab4dae9de00f68d847da7_1567_512x512_fill_lanczos_center_3.png</url><title>Data Science</title><link>https://witsblog.github.io/tag/data-science/</link></image><item><title>AI &amp; Robotics Hackathon 2021</title><link>https://witsblog.github.io/post/012_arv_hackathon_2021/</link><pubDate>Thu, 07 Oct 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/012_arv_hackathon_2021/</guid><description>&lt;p>ARV Hackathon 2021 is back with the new and even more challenging problem statements that dare you to find innovative solutions in Cyber Security and Subsea Machine Learning spaces.&lt;/p>
+&lt;p>All tech talents, start-ups, and the next generation innovators are invited to join ARV in creating the innovative technological solutions that will transform the future of Thailand and Southeast Asia.&lt;/p>
+&lt;p>Stay Tuned!&lt;/p></description></item><item><title>Facebook’s News Feed Ranking Algorithm</title><link>https://witsblog.github.io/post/010_fb_ranking/</link><pubDate>Sun, 11 Jul 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/010_fb_ranking/</guid><description/></item><item><title>Data Science &amp; Machine Learning In Oil And Gas Industry</title><link>https://witsblog.github.io/post/005_data_sci_pttep_arv/</link><pubDate>Mon, 25 Jan 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/005_data_sci_pttep_arv/</guid><description>&lt;h2 id="introduction">Introduction&lt;/h2>
+&lt;p>The Oil and Gas industry is one of the most lucrative industries that has a very high operating cost. Cutting costs is therefore a major priority when it comes to this business. In this post, I share some of the mahcine learning (or data science, if you will) applications that I have worked on.&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-02.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-03.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-04.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;div id="chart-928641753" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./pipe.json", function(chart) {
+Plotly.plot('chart-928641753', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;br>
+&lt;div id="chart-624178539" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./series.json", function(chart) {
+Plotly.plot('chart-624178539', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;br>
+&lt;div id="chart-859176324" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./data.json", function(chart) {
+Plotly.plot('chart-859176324', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script></description></item></channel></rss>

@@ -1,0 +1,814 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts | Wit's Blog</title><link>https://witsblog.github.io/post/</link><atom:link href="https://witsblog.github.io/post/index.xml" rel="self" type="application/rss+xml"/><description>Posts</description><generator>Wowchemy (https://wowchemy.com)</generator><language>en-us</language><lastBuildDate>Sun, 10 Oct 2021 00:00:00 +0000</lastBuildDate><image><url>https://witsblog.github.io/media/icon_hu66cf44b0d2eab4dae9de00f68d847da7_1567_512x512_fill_lanczos_center_3.png</url><title>Posts</title><link>https://witsblog.github.io/post/</link></image><item><title>Continuous Training with TFX and Kubeflow Pipelines</title><link>https://witsblog.github.io/post/013_tfx_google_ai_platform/</link><pubDate>Sun, 10 Oct 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/013_tfx_google_ai_platform/</guid><description>&lt;p>In this post I will be exploring the TFX and its integration with Kubeflow Pipelines on Google AI Platform.&lt;/p>
+&lt;p>This post is kind of my summarization for my learning purpose.&lt;/p>
+&lt;h2 id="1-dataset">1. Dataset&lt;/h2>
+&lt;h2 id="2-create-clusters">2. Create Clusters&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/04.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/05.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/06.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="3-understanding-tfx-pipelines">3. Understanding TFX Pipelines&lt;/h2>
+&lt;p>In order to understand TFX pipelines, we need to understand some keywords. For full tutorial, refer to TensorFlow&amp;rsquo;s article &lt;a href="https://www.tensorflow.org/tfx/guide/understanding_tfx_pipelines" target="_blank" rel="noopener">here&lt;/a>.&lt;/p>
+&lt;h3 id="artifact">Artifact&lt;/h3>
+&lt;p>Artifacts are the output of the steps in a TFX pipeline. They can be used by subsequent steps in the pipeline.&lt;/p>
+&lt;p>Artifacts must be stongly typed with an &lt;strong>artifact type&lt;/strong> registered in the &lt;a href="https://www.tensorflow.org/tfx/guide/mlmd" target="_blank" rel="noopener">ML Metadata&lt;/a> store. This point is not very clear yet; I need to research and will come back to expand more on this later.&lt;/p>
+&lt;p>Questions&lt;/p>
+&lt;ul>
+&lt;li>Where does artifact get stored?&lt;/li>
+&lt;li>What needs to be changed if we run the pipeline on a Cloud?&lt;/li>
+&lt;/ul>
+&lt;h3 id="parameter">Parameter&lt;/h3>
+&lt;p>Parameters are something that we can set through configuration, instead of hard coding; they are just like the hyperparameters of a ML/DL model.&lt;/p>
+&lt;h3 id="component">Component&lt;/h3>
+&lt;p>Component is an implementation of the task in our pipeline. Components in TFX are composed of&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Component specification&lt;/strong>: This defines the component&amp;rsquo;s input and output artifacts, and component&amp;rsquo;s parameters.&lt;/li>
+&lt;li>&lt;strong>Executor&lt;/strong>: This implements the real work of a step in the pipeline.&lt;/li>
+&lt;li>&lt;strong>Component interface&lt;/strong>: This packages the component specification and executor for use in a pipeline. (This is not very clear.)&lt;/li>
+&lt;/ul>
+&lt;p>Questions&lt;/p>
+&lt;ul>
+&lt;li>Where does the component get run?&lt;/li>
+&lt;li>Do components run in the same environment? Same OS and same dependencies?&lt;/li>
+&lt;li>What if each component requires different dependencies?&lt;/li>
+&lt;/ul>
+&lt;h3 id="pipeline">Pipeline&lt;/h3>
+&lt;p>TensorFlow says that a TFX pipeline is a &lt;em>&lt;strong>portable&lt;/strong>&lt;/em> implementation of an ML workflow, as it can be run on different ochestrators, such as: Apache Airflow, Apache Beam, and Kubeflow Pipelines.&lt;/p>
+&lt;p>First, we build a pipeline, which is of type &lt;code>tfx.orchestration.pipeline.Pipeline&lt;/code>:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">pipeline&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">def&lt;/span> &lt;span class="nf">_create_pipeline&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="n">pipeline&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Pipeline&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;&amp;#34;&amp;#34;
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="s2"> &amp;#34;&amp;#34;&amp;#34;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">pass&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>To select a different ochestration tool, we need to import from &lt;code>tfx.orchestration&lt;/code> module.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Airflow&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.airflow.airflow_dag_runner&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">AirflowDagRunner&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.airflow.airflow_dag_runner&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">AirflowPipelineConfig&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">DAG&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">AirflowDagRunner&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">AirflowPipelineConfig&lt;/span>&lt;span class="p">())&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">run&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">_create_pipeline&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Kubeflow&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.kubeflow&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">kubeflow_dag_runner&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">kubeflow_dag_runner&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">KubeflowDagRunner&lt;/span>&lt;span class="p">()&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">run&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">create_pipeline&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h2 id="4-tfx-custom-components">4. TFX Custom Components&lt;/h2>
+&lt;p>Understanding the custom components will get us far! Refer to TensorFlow&amp;rsquo;s article &lt;a href="https://www.tensorflow.org/tfx/guide/understanding_custom_components" target="_blank" rel="noopener">here&lt;/a>.&lt;/p>
+&lt;h3 id="tfx-components-at-runtime">TFX components at runtime&lt;/h3>
+&lt;blockquote>
+&lt;p>When a pipeline runs a TFX component, the component is executed in three phases:&lt;/p>
+&lt;ol>
+&lt;li>First, the Driver uses the component specification to retrieve the required artifacts from the metadata store and pass them into the component.&lt;/li>
+&lt;li>Next, the Executor performs the component&amp;rsquo;s work.&lt;/li>
+&lt;li>Then the Publisher uses the component specification and the results from the executor to store the component&amp;rsquo;s outputs in the metadata store.&lt;/li>
+&lt;/ol>
+&lt;/blockquote>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/component.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h3 id="types-of-custom-components">Types of custom components&lt;/h3>
+&lt;ol>
+&lt;li>
+&lt;p>&lt;strong>Python function-based&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>The specification is completely defined in the Python code.&lt;/li>
+&lt;li>The function&amp;rsquo;s arguments with type annotations describe input artifact, output artifact, and parameters.&lt;/li>
+&lt;li>The function&amp;rsquo;s body defines the component&amp;rsquo;s executor.&lt;/li>
+&lt;li>The component interface is dedined by adding &lt;code>@component&lt;/code> decorator.&lt;/li>
+&lt;/ul>
+&lt;br>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="nd">@component&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">def&lt;/span> &lt;span class="nf">MyComponent&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">model&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">InputArtifact&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">Model&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">output&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">OutputArtifact&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">Model&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">threshold&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">Parameter&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="mi">10&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">)&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="n">OutputDict&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">accuracy&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="nb">float&lt;/span>&lt;span class="p">):&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;&amp;#34;&amp;#34;
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="s2"> &amp;#34;&amp;#34;&amp;#34;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">pass&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;/li>
+&lt;li>
+&lt;p>&lt;strong>Container-based&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>This is suitable for building a component with custom runtime environment and dependencies.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>
+&lt;p>&lt;strong>Fully custom&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>This is for building a component that is not in the built-in TFX standard components.&lt;/li>
+&lt;li>It lets us build a component by implementing a custom &lt;em>component specification&lt;/em>, &lt;em>executor&lt;/em>, and &lt;em>component interface&lt;/em> classes.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ol>
+&lt;h2 id="5-code">5. Code&lt;/h2>
+&lt;br>
+&lt;h2 id="6-pipeline-dashboard">6. Pipeline Dashboard&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/10.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/11.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/13.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/15_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/16_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/17_1.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/17_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="7-dataflow">7. Dataflow&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/19.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/20.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/21.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/22.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/013/24.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="my-thoughts">My Thoughts&lt;/h2>
+&lt;ul>
+&lt;li>TFX seems to be built around TensorFlow. Not very sure if it’s gonna work with other DL/ML libraries without heavily modifying the TFX components. But if we are in a Google Cloud/TensorFlow ecosystem, stick with it!&lt;/li>
+&lt;li>Unlike TFX, &lt;a href="https://mlflow.org/" target="_blank" rel="noopener">MLFlow&lt;/a> seems to be more general and more open to other DL/ML libraries.&lt;/li>
+&lt;/ul>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://www.tensorflow.org/tfx/tutorials" target="_blank" rel="noopener">https://www.tensorflow.org/tfx/tutorials&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://www.tensorflow.org/tfx/guide/mlmd" target="_blank" rel="noopener">https://www.tensorflow.org/tfx/guide/mlmd&lt;/a>&lt;/li>
+&lt;/ul></description></item><item><title>AI &amp; Robotics Hackathon 2021</title><link>https://witsblog.github.io/post/012_arv_hackathon_2021/</link><pubDate>Thu, 07 Oct 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/012_arv_hackathon_2021/</guid><description>&lt;p>ARV Hackathon 2021 is back with the new and even more challenging problem statements that dare you to find innovative solutions in Cyber Security and Subsea Machine Learning spaces.&lt;/p>
+&lt;p>All tech talents, start-ups, and the next generation innovators are invited to join ARV in creating the innovative technological solutions that will transform the future of Thailand and Southeast Asia.&lt;/p>
+&lt;p>Stay Tuned!&lt;/p></description></item><item><title>Codegoda 2021</title><link>https://witsblog.github.io/post/011_codegoda_2021/</link><pubDate>Sun, 18 Jul 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/011_codegoda_2021/</guid><description>&lt;!--
+&lt;details class="toc-inpage d-print-none " open>
+&lt;summary class="font-weight-bold">Table of Contents&lt;/summary>
+&lt;nav id="TableOfContents">
+&lt;ul>
+&lt;li>&lt;a href="#1">1.&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#2">2.&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#3">3.&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#4">4.&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#5">5.&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#6-which-microservice-failed">6. Which microservice failed?&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#7">7.&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#8">8.&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#9">9.&lt;/a>&lt;/li>
+&lt;/ul>
+&lt;/nav>
+&lt;/details>
+-->
+&lt;h2 id="1">1.&lt;/h2>
+&lt;h2 id="2">2.&lt;/h2>
+&lt;h2 id="3">3.&lt;/h2>
+&lt;h2 id="4">4.&lt;/h2>
+&lt;h2 id="5">5.&lt;/h2>
+&lt;h2 id="6-which-microservice-failed">6. Which microservice failed?&lt;/h2>
+&lt;p>Given the services (nodes in the graph) that alert, the task is to identify which services is the root cause of the failure. A failure is a root cause only when there are no other dependencies which also fail.&lt;/p>
+&lt;div class="mermaid">graph TD;
+A-->B;
+A-->C;
+B-->D;
+C-->E;
+E-->D;
+C-->F;
+&lt;/div>
+&lt;p>Input (alerts):&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="mi">1&lt;/span> &lt;span class="n">E&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="mi">3&lt;/span> &lt;span class="n">A&lt;/span> &lt;span class="n">C&lt;/span> &lt;span class="n">E&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="mi">2&lt;/span> &lt;span class="n">A&lt;/span> &lt;span class="n">D&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="mi">3&lt;/span> &lt;span class="n">D&lt;/span> &lt;span class="n">E&lt;/span> &lt;span class="n">F&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Example output:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="mi">1&lt;/span> &lt;span class="n">E&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="mi">1&lt;/span> &lt;span class="n">E&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="mi">1&lt;/span> &lt;span class="n">D&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="mi">2&lt;/span> &lt;span class="n">D&lt;/span> &lt;span class="n">F&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>&lt;strong>Explanation&lt;/strong>&lt;/p>
+&lt;p>The input graph (omitted) is the one shown in the diagram above.
+The input has 4 alerts.&lt;/p>
+&lt;p>In the first case, only service &lt;code>E&lt;/code> has an alert. Thus, &lt;code>E&lt;/code> is the root cause.&lt;/p>
+&lt;p>In the second alert case, services &lt;code>A&lt;/code>, &lt;code>C&lt;/code> and &lt;code>E&lt;/code> have alerts. Since &lt;code>A&lt;/code> depends on &lt;code>C&lt;/code> and &lt;code>C&lt;/code> depends on &lt;code>E&lt;/code>, we don’t consider them the root cause. &lt;code>E&lt;/code> has no dependency and has an alert. Thus, &lt;code>E&lt;/code> is the root cause.&lt;/p>
+&lt;p>In the third case, services &lt;code>A&lt;/code> and &lt;code>D&lt;/code> have alerts. Since &lt;code>A&lt;/code> depends on &lt;code>D&lt;/code> through &lt;code>C&lt;/code>, &lt;code>B&lt;/code> and &lt;code>E&lt;/code>, we still consider that the failure on service &lt;code>D&lt;/code> might have caused a failure on service &lt;code>A&lt;/code> even if the alerts on services &lt;code>C&lt;/code>, &lt;code>B&lt;/code> and &lt;code>E&lt;/code> did not fire. Thus, &lt;code>D&lt;/code> is the root cause.&lt;/p>
+&lt;p>In the fourth case, services &lt;code>D&lt;/code>, &lt;code>E&lt;/code> and &lt;code>F&lt;/code> have alerts. &lt;code>E&lt;/code> depends on &lt;code>D&lt;/code>, so &lt;code>E&lt;/code> is not the root cause. &lt;code>D&lt;/code> and &lt;code>F&lt;/code> do not depend on any services which failed, so they both are the root causes.&lt;/p>
+&lt;p>&lt;strong>Solution 1&lt;/strong>&lt;/p>
+&lt;p>This is probably not an optimal solution, but it came first when I tried. The idea is to construct a reverse graph and find all the descendants. In this case, the time complexity would be $O(A(E + V))$ where $A$ is the number of alerts and $V$ and $E$ is the number of vertices and edges in the graph respectively.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-cpp" data-lang="cpp">&lt;span class="line">&lt;span class="cl">&lt;span class="kt">void&lt;/span> &lt;span class="nf">dfs&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">const&lt;/span> &lt;span class="kt">int&lt;/span> &lt;span class="n">root&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">const&lt;/span> &lt;span class="kt">int&lt;/span> &lt;span class="n">start&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">const&lt;/span> &lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int&lt;/span>&lt;span class="o">&amp;gt;&amp;gt;&amp;amp;&lt;/span> &lt;span class="n">adj&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// Adjacency list of the reversed graph
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">bool&lt;/span>&lt;span class="o">&amp;gt;&amp;amp;&lt;/span> &lt;span class="n">visited&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">unordered_map&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">bool&lt;/span>&lt;span class="o">&amp;gt;&amp;amp;&lt;/span> &lt;span class="n">root_causes&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">root&lt;/span> &lt;span class="o">!=&lt;/span> &lt;span class="n">start&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">it&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">root_causes&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">find&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">root&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">it&lt;/span> &lt;span class="o">!=&lt;/span> &lt;span class="n">root_causes&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">end&lt;/span>&lt;span class="p">())&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">root_causes&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">erase&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">it&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">visited&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">root&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="nb">true&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="k">const&lt;/span> &lt;span class="k">auto&lt;/span> &lt;span class="nl">n&lt;/span> &lt;span class="p">:&lt;/span> &lt;span class="n">adj&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">root&lt;/span>&lt;span class="p">])&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="o">!&lt;/span>&lt;span class="n">visited&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">n&lt;/span>&lt;span class="p">])&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">dfs&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">n&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">start&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">adj&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">visited&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">root_causes&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kt">void&lt;/span> &lt;span class="nf">solve&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">const&lt;/span> &lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int&lt;/span>&lt;span class="o">&amp;gt;&amp;gt;&amp;amp;&lt;/span> &lt;span class="n">adj&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// Adjacency list of the reversed graph
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">unordered_map&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">bool&lt;/span>&lt;span class="o">&amp;gt;&lt;/span> &lt;span class="n">services_with_alert&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">const&lt;/span> &lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">string&lt;/span>&lt;span class="o">&amp;gt;&amp;amp;&lt;/span> &lt;span class="n">service_names&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">unordered_map&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">bool&lt;/span>&lt;span class="o">&amp;gt;&lt;/span> &lt;span class="n">root_causes&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">services_with_alert&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="k">const&lt;/span> &lt;span class="k">auto&lt;/span> &lt;span class="nl">p&lt;/span> &lt;span class="p">:&lt;/span> &lt;span class="n">services_with_alert&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">size_t&lt;/span> &lt;span class="n">num_services&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">service_names&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">size&lt;/span>&lt;span class="p">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">bool&lt;/span>&lt;span class="o">&amp;gt;&lt;/span> &lt;span class="n">visited&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">num_services&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="nb">false&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">dfs&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">p&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">first&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">p&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">first&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">adj&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">visited&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">root_causes&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// print out solution
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">cout&lt;/span> &lt;span class="o">&amp;lt;&amp;lt;&lt;/span> &lt;span class="n">root_causes&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">size&lt;/span>&lt;span class="p">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="k">const&lt;/span> &lt;span class="k">auto&lt;/span> &lt;span class="nl">p&lt;/span> &lt;span class="p">:&lt;/span> &lt;span class="n">root_causes&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">cout&lt;/span> &lt;span class="o">&amp;lt;&amp;lt;&lt;/span> &lt;span class="s">&amp;#34; &amp;#34;&lt;/span> &lt;span class="o">&amp;lt;&amp;lt;&lt;/span> &lt;span class="n">service_names&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">p&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">first&lt;/span>&lt;span class="p">];&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">cout&lt;/span> &lt;span class="o">&amp;lt;&amp;lt;&lt;/span> &lt;span class="n">endl&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;h2 id="7">7.&lt;/h2>
+&lt;h2 id="8">8.&lt;/h2>
+&lt;h2 id="9">9.&lt;/h2>
+&lt;br>
+&lt;!-- ## Notes
+- I couldn't seem to find restrictions on sharing or posting questions in the terms (https://codegoda.io/terms-and-conditions/). But if I read it wrong, Dear Agoda, please let me know if it is against the terms. --></description></item><item><title>Facebook’s News Feed Ranking Algorithm</title><link>https://witsblog.github.io/post/010_fb_ranking/</link><pubDate>Sun, 11 Jul 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/010_fb_ranking/</guid><description/></item><item><title>EfficientDet: Towards Scalable Architecture in AutoML</title><link>https://witsblog.github.io/post/009_auto_ml/</link><pubDate>Sat, 10 Jul 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/009_auto_ml/</guid><description>&lt;h2 id="anchor-boxes">Anchor Boxes&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/009/anchors_level_3.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/009/anchors_level_4.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/009/anchors_level_5.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/009/anchors_level_6.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/009/anchors_level_7.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h2 id="data-pipeline">Data Pipeline&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/009/img_original.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/009/img_resize.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>Mingxing Tan, Ruoming Pang, Quoc V. Le. &lt;a href="https://arxiv.org/abs/1911.09070" target="_blank" rel="noopener">EfficientDet: Scalable and Efficient Object Detection&lt;/a>. CVPR 2020.&lt;/li>
+&lt;/ul></description></item><item><title>DARTS: Differentiable Architecture Search</title><link>https://witsblog.github.io/post/008_darts/</link><pubDate>Mon, 21 Jun 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/008_darts/</guid><description>&lt;p>Differentiable Architecture Search&lt;/p>
+$$
+\begin{aligned}
+&amp;&amp; \min_{\alpha} &amp;&amp;&amp; \mathcal{L}_{val} (w^{\ast} (\alpha), \alpha) \\
+&amp;&amp; \text{s.t.} &amp;&amp;&amp; w^{\ast} (\alpha) = \text{argmin}_{w} \space \mathcal{L}_{train} (w, \alpha) \\
+\end{aligned}
+$$</description></item><item><title>Waymo Open Dataset</title><link>https://witsblog.github.io/post/007_explore_waymo_perception/</link><pubDate>Mon, 21 Jun 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/007_explore_waymo_perception/</guid><description>&lt;blockquote>
+&lt;p>The most successful ML projects in production (Tesla, iPhone, Amazon drones, Zipline) are where you own the entire stack. They iterate not just ML algorithms but also: 1) how to collect/label data, 2) infrastructure, 3) hardware ML models run on.&lt;/p>
+&lt;/blockquote>
+&lt;p>Summarizing Andrej Karpathy&amp;rsquo;s CVPR talk, Chip Huyen &lt;a href="https://twitter.com/chipro/status/1407890489697652741" target="_blank" rel="noopener">highlighted&lt;/a> that the most successful ML projects in production are those that have complete ownership of the entire stack. These projects iterate not only on ML algorithms but also on data collection and labeling, infrastructure, and the hardware on which ML models operate.&lt;/p>
+&lt;p>Waymo, another major player, released its dataset in 2019, which is in &lt;a href="https://www.tensorflow.org/tutorials/load_data/tfrecord" target="_blank" rel="noopener">TFRecord&lt;/a> format, requiring TensorFlow for reading. This heavy dependence on TensorFlow makes the tools and data preprocessing pipeline less compatible with other frameworks. In contrast, datasets like KITTI, Lyft, TRI, and Argoverse are released in a simpler, raw format. As someone who used PyTorch more than TensorFlow, I found it difficult to inspect and debug the &lt;a href="https://www.tensorflow.org/guide/data" target="_blank" rel="noopener">&lt;code>tf.data&lt;/code>&lt;/a> components when eager execution &lt;em>was&lt;/em> not available inside &lt;code>tf.data&lt;/code>.&lt;/p>
+&lt;p>After a year and listening to Andrej Karpathy&amp;rsquo;s talk at CVPR 2021, I now kind of appreciate why Google&amp;rsquo;s Waymo chose to release their dataset in TFRecord format. Interestingly, the winner of the Challenge used PyTorch though.&lt;/p>
+&lt;p>The good news is&amp;hellip; we can now use:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># TensorFlow 2.5&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">tf&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">data&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">experimental&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">enable_debug_mode&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Enough for the introduction, let&amp;rsquo;s visualize the data.&lt;/p>
+&lt;h2 id="visualizing-camera-data">Visualizing Camera Data&lt;/h2>
+&lt;p>Most of the code is straightforward.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">tensorflow&lt;/span> &lt;span class="k">as&lt;/span> &lt;span class="nn">tf&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">matplotlib.pyplot&lt;/span> &lt;span class="k">as&lt;/span> &lt;span class="nn">plt&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">matplotlib.patches&lt;/span> &lt;span class="k">as&lt;/span> &lt;span class="nn">patches&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Replace FILENAME with tfrecord file&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">dataset&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">tf&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">data&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">TFRecordDataset&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">FILENAME&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">compression_type&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s1">&amp;#39;&amp;#39;&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">for&lt;/span> &lt;span class="n">data&lt;/span> &lt;span class="ow">in&lt;/span> &lt;span class="n">dataset&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">frame&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">open_dataset&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Frame&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">frame&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">ParseFromString&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="nb">bytearray&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">data&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">numpy&lt;/span>&lt;span class="p">()))&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">figure&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1"># Draw the camera labels.&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">count&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="mi">0&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="n">camera_image&lt;/span> &lt;span class="ow">in&lt;/span> &lt;span class="n">frame&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">images&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="n">camera_labels&lt;/span> &lt;span class="ow">in&lt;/span> &lt;span class="n">frame&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">camera_labels&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1"># Ignore camera labels that do not correspond to this camera.&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="n">camera_labels&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">name&lt;/span> &lt;span class="o">!=&lt;/span> &lt;span class="n">camera_image&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">name&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">continue&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">count&lt;/span> &lt;span class="o">+=&lt;/span> &lt;span class="mi">1&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">ax&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">subplot&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">3&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">count&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1"># Iterate over the individual labels.&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="n">label&lt;/span> &lt;span class="ow">in&lt;/span> &lt;span class="n">camera_labels&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">labels&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1"># Draw the object bounding box.&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">ax&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">add_patch&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">patches&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Rectangle&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">xy&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">label&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">box&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">center_x&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="mf">0.5&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">label&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">box&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">length&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">label&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">box&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">center_y&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="mf">0.5&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">label&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">box&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">width&lt;/span>&lt;span class="p">),&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">width&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="n">label&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">box&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">length&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">height&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="n">label&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">box&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">width&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">linewidth&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">edgecolor&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s1">&amp;#39;red&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">facecolor&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s1">&amp;#39;none&amp;#39;&lt;/span>&lt;span class="p">))&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1"># Show the camera image.&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">imshow&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">tf&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">image&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">decode_jpeg&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">camera_image&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">image&lt;/span>&lt;span class="p">))&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">title&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">camera_image&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">name&lt;/span>&lt;span class="p">))&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">grid&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="kc">False&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">axis&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="s1">&amp;#39;off&amp;#39;&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">show&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">close&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;p>The following shows some of the dataset.&lt;/p>
+&lt;div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;">
+&lt;iframe src="https://www.youtube.com/embed/inUtJcAszXI" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:0;" allowfullscreen title="YouTube Video">&lt;/iframe>
+&lt;/div>
+&lt;br>
+&lt;div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;">
+&lt;iframe src="https://www.youtube.com/embed/S4ZGBSAm7uo" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:0;" allowfullscreen title="YouTube Video">&lt;/iframe>
+&lt;/div>
+&lt;br>
+&lt;div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;">
+&lt;iframe src="https://www.youtube.com/embed/h8X3_4qeGI4" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:0;" allowfullscreen title="YouTube Video">&lt;/iframe>
+&lt;/div>
+&lt;br>
+&lt;div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;">
+&lt;iframe src="https://www.youtube.com/embed/UwI7cWSBmLo" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:0;" allowfullscreen title="YouTube Video">&lt;/iframe>
+&lt;/div>
+&lt;br>
+&lt;h2 id="dataset-statistics">Dataset Statistics&lt;/h2>
+&lt;h3 id="3d-labels">3D Labels&lt;/h3>
+&lt;div id="chart-327896154" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./lwh_3d_waymo.json", function(chart) {
+Plotly.plot('chart-327896154', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;div id="chart-721435698" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./histogram_l.json", function(chart) {
+Plotly.plot('chart-721435698', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;div id="chart-328657149" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./histogram_w.json", function(chart) {
+Plotly.plot('chart-328657149', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;div id="chart-289413765" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./histogram_h.json", function(chart) {
+Plotly.plot('chart-289413765', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;h3 id="2d-labels">2D Labels&lt;/h3>
+&lt;div id="chart-514389762" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./bbox_compare.json", function(chart) {
+Plotly.plot('chart-514389762', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script></description></item><item><title>Fast Execution with CUDA!</title><link>https://witsblog.github.io/post/006_cuda_basic/</link><pubDate>Fri, 12 Mar 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/006_cuda_basic/</guid><description/></item><item><title>Data Science &amp; Machine Learning In Oil And Gas Industry</title><link>https://witsblog.github.io/post/005_data_sci_pttep_arv/</link><pubDate>Mon, 25 Jan 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/005_data_sci_pttep_arv/</guid><description>&lt;h2 id="introduction">Introduction&lt;/h2>
+&lt;p>The Oil and Gas industry is one of the most lucrative industries that has a very high operating cost. Cutting costs is therefore a major priority when it comes to this business. In this post, I share some of the mahcine learning (or data science, if you will) applications that I have worked on.&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-02.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-03.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/005/post_05-04.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;div id="chart-928641753" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./pipe.json", function(chart) {
+Plotly.plot('chart-928641753', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;br>
+&lt;div id="chart-624178539" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./series.json", function(chart) {
+Plotly.plot('chart-624178539', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script>
+&lt;br>
+&lt;div id="chart-859176324" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./data.json", function(chart) {
+Plotly.plot('chart-859176324', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script></description></item><item><title>Custom Sonar Simulation in Gazebo</title><link>https://witsblog.github.io/post/004_sonar_sim/</link><pubDate>Mon, 04 Jan 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/004_sonar_sim/</guid><description/></item><item><title>The Quest to Build an Autonomous Underwater Vehicle</title><link>https://witsblog.github.io/post/003_the_quest_to_build_auv/</link><pubDate>Mon, 04 Jan 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/003_the_quest_to_build_auv/</guid><description>&lt;blockquote>
+&lt;p>&amp;ldquo;We stand on the brink of a technological revolution. Soon, few of us will own our own automobiles and instead will get around in driverless electric vehicles that we summon with the touch of an app. We will be liberated from driving, prevent over 90% of car crashes, provide freedom of mobility to the elderly and disabled, and decrease our dependence on fossil fuels.&amp;rdquo; — The Quest to Build the Driverless Car&lt;/p>
+&lt;/blockquote>
+&lt;p>The same applies to oil and gas industry. Although robotic technologies have entered the oil and gas industry for around some time, the quest to build the autonomous underwater vehicle must go on!&lt;/p>
+&lt;p>In this post, I will briefly write about the kind of the things we do at our R&amp;amp;D team. (Please note that I cannot write all the details and so I have skipped some parts.)&lt;/p>
+&lt;h2 id="a-system">A System&lt;/h2>
+&lt;p>What do we need in order to build an autonomous underwater vehicle and its system?&lt;/p>
+&lt;ul>
+&lt;li>Hardware&lt;/li>
+&lt;li>Software
+&lt;ul>
+&lt;li>&lt;a href="#navigation-software">Navigation software&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#perception-algorithms">Perception algorithms&lt;/a>&lt;/li>
+&lt;li>&lt;a href="">Planning algorithms&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#control-algorithms">Control algorithms&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#simulation-platform">Simulation platform&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#data-analytics-software">Data analytics software&lt;/a>&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ul>
+&lt;p>All the teams (software, electrical, and mechanical) collaboratively design the robot. The physical aspect of the robot is mainly designed by a mechanical engineer team where they need to consider things such as the dynamic model, hydrodynamic model, robot mechanisms, and etc. The electrical engineer team is the ones who design and lay out electrical circuits connecting all components to a system. The software team mostly look at the high level aspect of the robot such as what sensors, what algorithms, how to communicate with the vessel, how many computing units, how to store logging data, and the list goes on.&lt;/p>
+&lt;h2 id="hardware">Hardware&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/003/01.jpeg" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/003/02.jpeg" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h2 id="navigation-software">Navigation Software&lt;/h2>
+&lt;ul>
+&lt;li>IMU dead reckoning&lt;/li>
+&lt;li>SLAM&lt;/li>
+&lt;li>Map building&lt;/li>
+&lt;/ul>
+&lt;h2 id="perception-algorithms">Perception Algorithms&lt;/h2>
+&lt;p>Perception algorithms are probably the key to intelligent autonomous vehicles. At ARV, we have developed several algorithms, including but not limited to 2D object detection, 3D object detection, point cloud-related algorithms, etc., in order to tackle the challenges we encountered in subsea robotics.&lt;/p>
+&lt;p>We have also developed several machine learning and &lt;a href="https://sirawit-github.github.io/post/05_data_sci_pttep_arv/" target="_blank" rel="noopener">deep learning models for automatic pipeline inspection&lt;/a> as well. These are used both in online (real-time) and offline (&lt;a href="#data-analytics-software">data analytics software&lt;/a>).&lt;/p>
+&lt;h2 id="planning-algorithms">Planning Algorithms&lt;/h2>
+&lt;ul>
+&lt;li>Way point planning&lt;/li>
+&lt;li>Optimal path planning&lt;/li>
+&lt;/ul>
+&lt;h2 id="control-algorithms">Control Algorithms&lt;/h2>
+&lt;h2 id="simulation-platform">Simulation Platform&lt;/h2>
+&lt;p>This is probably the testbed of our robotics software development. We use &lt;a href="http://gazebosim.org/" target="_blank" rel="noopener">Gazebo&lt;/a> as a simulator for realistic simulation, with some custom-implemented sensor plugins that we developed for our own use.&lt;/p>
+&lt;!-- ![](/image/post/04/simulation_old.png) -->
+&lt;p>Of course, these custom plugins should run very fast for the simulation to run smoothly, so the algorihtms must be hevily optimized. For example, the custom sonar plugin was implemented in CUDA to speed things up.&lt;/p>
+&lt;!-- ![](/image/post/06/cuda.png) -->
+&lt;h2 id="data-analytics-software">Data Analytics Software&lt;/h2>
+&lt;p>The collected data when the robot operates at the seabed must be analyzed in some way. We build our web application where customers can log in to see the analyzed data (as well as raw data) and the generated report.&lt;/p>
+&lt;div id="chart-423879651" class="chart">&lt;/div>
+&lt;script>
+(function() {
+let a = setInterval( function() {
+if ( typeof window.Plotly === 'undefined' ) {
+return;
+}
+clearInterval( a );
+Plotly.d3.json("./data.json", function(chart) {
+Plotly.plot('chart-423879651', chart.data, chart.layout, {responsive: true});
+});
+}, 500 );
+})();
+&lt;/script></description></item><item><title>Real-time 3D Object Detection from Point Clouds</title><link>https://witsblog.github.io/post/002_3d_object_detection/</link><pubDate>Wed, 30 Oct 2019 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/002_3d_object_detection/</guid><description>&lt;h2 id="1-introduction">1. Introduction&lt;/h2>
+&lt;h2 id="2-model-implementation">2. Model Implementation&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/pixor_model.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h2 id="3-initial-results">3. Initial Results&lt;/h2>
+&lt;h3 id="31-single-class-detection">3.1 Single Class Detection&lt;/h3>
+&lt;h3 id="simple-scenes">Simple Scenes&lt;/h3>
+&lt;p>Currently the model is trained on a single class: &lt;code>car&lt;/code>. For the following result, green indicates the ground truth labels, and light blue indicates the predicted results.&lt;/p>
+&lt;p>In a simple scene, the model seems to recognize all the car objects:&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_64.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_83.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h3 id="harder">Harder&lt;/h3>
+&lt;p>Since the model is trained using only the top view LIDAR data, it is reasonable that the model can miss the cases where thr LIDAR point cloud of the object is sparse:&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/img_95_3dbox_gt.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_95.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_95_top.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_95_sparse_top.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h3 id="easy-mistake">Easy Mistake&lt;/h3>
+&lt;p>However, the model still misses some obvious detection, such as in the following scene. Here, the front car in the very middle doesn&amp;rsquo;t get detected.&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/img_49_3dbox_gt.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_49.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h3 id="why-top-view">Why Top View?&lt;/h3>
+&lt;p>What I think the top view (or bird&amp;rsquo;s eye view) approach can do well is that: It can detect the objects which are occluded in the front camera view. If we look at the following image, the car on the very right of the image is largely occluded:&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/zoom.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_99_front.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>However, viewing the point cloud from the top, these 2 cars are clearly separated in the space, and therefore the model can easily detect the targeted objects:&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/002/model_6000_img_99_occlusion_top.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h3 id="32-multi-class-detection">3.2 Multi-Class Detection&lt;/h3>
+&lt;h2 id="4-final-results">4. Final Results&lt;/h2>
+&lt;h2 id="5-my-thoughts">5. My Thoughts&lt;/h2>
+&lt;h2 id="6-references">6. References&lt;/h2>
+&lt;ul>
+&lt;li>H. Su, S. Maji, E. Kalogerakis, and E. G. Learned-Miller. &lt;a href="">Multi-view convolutional neural networks for 3d shaperecognition&lt;/a> ICCV, 2015&lt;/li>
+&lt;li>Bin Yang, Wenjie Luo, and Raquel Urtasun. &lt;a href="">PIXOR: Real-time 3d object detection from point clouds&lt;/a> CVPR, 2018&lt;/li>
+&lt;/ul></description></item><item><title>Visual Odometry Implementation from Scratch</title><link>https://witsblog.github.io/post/001_visual_odometry/</link><pubDate>Sat, 05 Oct 2019 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/001_visual_odometry/</guid><description>&lt;h2 id="introduction">Introduction&lt;/h2>
+&lt;p>This is the first-ever post of my blog; so I will give it a try. This post is about things that I went through when I tried to implement a simple monocular visual odometry from scratch. For a programming language, I choose MATLAB because it is easy-to-use and fast for prototyping a project.&lt;/p>
+&lt;p>&lt;em>&lt;strong>Disclaimer:&lt;/strong>&lt;/em> This is not a state-of-the-art implementation. This simply serves the purpose of learning.&lt;/p>
+&lt;h2 id="the-problem">The Problem&lt;/h2>
+&lt;p>To give a general idea, visual odometry (VO) is an algorithm that aims to recover the path incrementally, by using the visual input from cameras, and hence the name. It can be considered as a sequential structure from motion, as opposed to hierarchical structure from motion. Imagine a robot or an agent, attached with a calibrated camera $C$, moves through an environment and receives the image continuously. The images
+$I_k, I_{k-1}$ are taken at different time steps
+$k$ and
+$k-1$, which corresponds to the camera pose
+$C_k$ and $C_{k-1}$ respectively. The task of VO is basically to retrieve the transformation matrix
+$$T = \left[R \lvert t \right]$$ that relates two camera poses, and concatenate all the transformaitons
+$T_k$ to get the current camera pose:&lt;/p>
+$$ C_{t} = T_{t,t-1}C_{t-1}$$
+&lt;h2 id="getting-things-up--running">Getting Things Up &amp;amp; Running&lt;/h2>
+&lt;p>I first have an initialization function &lt;code>vo_initialize.m&lt;/code> that takes two image frames, establishing keypoint correspondences between these two frames using KLT feature tracker, estimating relative camera pose, and finally triangulating an initial 3D point cloud landmarks. I admit that these may sound lacking of excitement (as they are something that is well understood in the computer vision community), but they are not easy to implement from scratch in a single sit.&lt;/p>
+&lt;h3 id="feature-detection">Feature Detection&lt;/h3>
+&lt;p>This is a simple plementation of Harris corner detector. For each pixel
+$(u,v)$, we calculate a score&lt;/p>
+$$R = det(A_{u,v}) - {\lambda}trace^2(A_{u,v})$$
+&lt;p>where&lt;/p>
+$$ A_{u,v} = \begin{bmatrix} \sum{I^2_{x}} &amp; \sum{I_{x}I_{y}}\\ \sum{I_{x}I_{y}} &amp; \sum{I^2_{y}} \end{bmatrix} $$
+&lt;p>and
+$I_x, I_y$ are the image gradients in
+$x$ and
+$y$ direction respectively.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-matlab" data-lang="matlab">&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_x&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">conv2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">img&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="p">[&lt;/span>&lt;span class="o">-&lt;/span>&lt;span class="mi">1&lt;/span> &lt;span class="mi">0&lt;/span> &lt;span class="mi">1&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="o">-&lt;/span>&lt;span class="mi">2&lt;/span> &lt;span class="mi">0&lt;/span> &lt;span class="mi">2&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="o">-&lt;/span>&lt;span class="mi">1&lt;/span> &lt;span class="mi">0&lt;/span> &lt;span class="mi">1&lt;/span>&lt;span class="p">],&lt;/span> &lt;span class="s">&amp;#39;valid&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_y&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">conv2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">img&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="p">[&lt;/span>&lt;span class="o">-&lt;/span>&lt;span class="mi">1&lt;/span> &lt;span class="o">-&lt;/span>&lt;span class="mi">2&lt;/span> &lt;span class="o">-&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="mi">0&lt;/span> &lt;span class="mi">0&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="mi">1&lt;/span> &lt;span class="mi">2&lt;/span> &lt;span class="mi">1&lt;/span>&lt;span class="p">],&lt;/span> &lt;span class="s">&amp;#39;valid&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_xx&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">double&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">I_x&lt;/span>&lt;span class="o">.^&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_yy&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">double&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">I_y&lt;/span>&lt;span class="o">.^&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_xy&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">double&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">I_x&lt;/span>&lt;span class="o">.*&lt;/span>&lt;span class="n">I_y&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_xx_sum&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">conv2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">I_xx&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="nb">ones&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">patch_size&lt;/span>&lt;span class="p">),&lt;/span> &lt;span class="s">&amp;#39;valid&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_yy_sum&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">conv2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">I_yy&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="nb">ones&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">patch_size&lt;/span>&lt;span class="p">),&lt;/span> &lt;span class="s">&amp;#39;valid&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">I_xy_sum&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">conv2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">I_xy&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="nb">ones&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">patch_size&lt;/span>&lt;span class="p">),&lt;/span> &lt;span class="s">&amp;#39;valid&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">pad_size&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="nb">floor&lt;/span>&lt;span class="p">((&lt;/span>&lt;span class="n">patch_size&lt;/span>&lt;span class="o">+&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="o">/&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">scores&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">I_xx_sum&lt;/span>&lt;span class="o">.*&lt;/span>&lt;span class="n">I_yy_sum&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">I_xy_sum&lt;/span>&lt;span class="o">.^&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">lambda&lt;/span>&lt;span class="o">*&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">I_xx_sum&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="n">I_yy_sum&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="o">.^&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">scores&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">scores&lt;/span> &lt;span class="o">&amp;lt;&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">scores&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">padarray&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">scores&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="p">[&lt;/span>&lt;span class="n">pad_size&lt;/span> &lt;span class="n">pad_size&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>After calculating the score, we simply select
+$k$ keypoints with highest scores (with non-maximum suppression).&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-matlab" data-lang="matlab">&lt;span class="line">&lt;span class="cl">&lt;span class="n">scores_pad&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">padarray&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">scores&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="p">[&lt;/span>&lt;span class="n">r&lt;/span> &lt;span class="n">r&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">score_size&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="nb">size&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">scores_pad&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">keypoints&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="nb">zeros&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">k&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">for&lt;/span> &lt;span class="nb">i&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="mi">1&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="n">k&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">[&lt;/span>&lt;span class="o">~&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">idx&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="n">max&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">scores_pad&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="p">[],&lt;/span> &lt;span class="s">&amp;#39;all&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="s">&amp;#39;linear&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">[&lt;/span>&lt;span class="n">row&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">col&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="nb">ind2sub&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">score_size&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">idx&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">keypoints&lt;/span>&lt;span class="p">(:,&lt;/span> &lt;span class="nb">i&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="p">[&lt;/span>&lt;span class="n">row&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="n">col&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">r&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">scores_pad&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">row&lt;/span>&lt;span class="o">-&lt;/span>&lt;span class="n">r&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="n">row&lt;/span>&lt;span class="o">+&lt;/span>&lt;span class="n">r&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">col&lt;/span>&lt;span class="o">-&lt;/span>&lt;span class="n">r&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="n">col&lt;/span>&lt;span class="o">+&lt;/span>&lt;span class="n">r&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">=&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">end&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;h3 id="klt-feature-tracker">KLT Feature Tracker&lt;/h3>
+&lt;p>&amp;hellip;&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-matlab" data-lang="matlab">&lt;/code>&lt;/pre>&lt;/div>&lt;h3 id="pose-estimation">Pose Estimation&lt;/h3>
+&lt;p>&amp;hellip;&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-matlab" data-lang="matlab">&lt;/code>&lt;/pre>&lt;/div>&lt;h3 id="triangulation">Triangulation&lt;/h3>
+&lt;p>&amp;hellip;&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-matlab" data-lang="matlab">&lt;/code>&lt;/pre>&lt;/div>&lt;p>The result of &lt;code>vo_initialize.m&lt;/code> seems reasonable. Good to go!&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/001/post.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h2 id="problems-from-previous-implementation">Problems from Previous Implementation&lt;/h2>
+&lt;p>&amp;hellip;&lt;/p>
+&lt;h2 id="estimate-world-camera-pose">Estimate World Camera Pose&lt;/h2>
+&lt;p>&amp;hellip;&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-matlab" data-lang="matlab">&lt;/code>&lt;/pre>&lt;/div>&lt;h2 id="bundle-adjustment">Bundle Adjustment&lt;/h2>
+&lt;p>Bundle adjustment is a very cool concept. To put it simply, it is an optimization algorithm used to refine the estimated trajectory.&lt;/p>
+&lt;p>In this implementation, a &lt;em>motion-only&lt;/em> bundle adjustment is implemented, which optimizes only the camera orientation $R$ and position $t$. This implies that&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-matlab" data-lang="matlab">&lt;/code>&lt;/pre>&lt;/div>&lt;h2 id="results">Results&lt;/h2>
+&lt;p>Putting it all together, the &lt;code>vo_initialize.m&lt;/code> function initializes the VO pipeline, creating initial 3D point landmarks, extracting initial keypoints, and estimating the initial pose of the camera. The &lt;code>vo_process.m&lt;/code> sequentially extracting and tracking image features from an image frame, across frames, and simultaneously estimating the pose of the camera. Bundle adjustment is also implemented to refine the estimated pose at each step. Lastly, new 3D points are regularly created as the number of currently tracked keypoints is shrinking over time. The following is the final result.&lt;/p>
+&lt;div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;">
+&lt;iframe src="https://www.youtube.com/embed/A5HnnSiZ_LM" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:0;" allowfullscreen title="YouTube Video">&lt;/iframe>
+&lt;/div>
+&lt;br>
+&lt;p>From the video, it is obvious that this is not a state-of-the-art implementation. There are various components that are not implemented. As we can see, the estimated trajectory starts to deviate from the ground truth after some time, due to the scale drift&amp;ndash;a common problem in monocular VO. The estimated trajetory also wiggles slightly, probaly due to the fact that the full bundle adjustment is not implemented. And the most importantly, I did not try to implement a loop closure.&lt;/p>
+&lt;h2 id="reflections">Reflections&lt;/h2>
+&lt;p>The task of implementing VO from scratch may sound lacking of excitement. I believe that the conventional pipeline of VO and SLAM is something that is already well-understood in the computer vision community. What I realize is that academic papers usually have missing steps that are left for the readers to figure out. Here, I tried to connect those steps and the result stands as a self-assesment of my understanding.&lt;/p></description></item></channel></rss>
