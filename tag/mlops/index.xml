@@ -1,0 +1,1025 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>MLOps | Wit's Blog</title><link>https://witsblog.github.io/tag/mlops/</link><atom:link href="https://witsblog.github.io/tag/mlops/index.xml" rel="self" type="application/rss+xml"/><description>MLOps</description><generator>Wowchemy (https://wowchemy.com)</generator><language>en-us</language><lastBuildDate>Thu, 12 Dec 2024 00:00:00 +0000</lastBuildDate><image><url>https://witsblog.github.io/media/icon_hu66cf44b0d2eab4dae9de00f68d847da7_1567_512x512_fill_lanczos_center_3.png</url><title>MLOps</title><link>https://witsblog.github.io/tag/mlops/</link></image><item><title>LLM Inference Optimization: TensorRT Plugin [Part 1]</title><link>https://witsblog.github.io/post/051_tensorrt_plugin/</link><pubDate>Thu, 12 Dec 2024 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/051_tensorrt_plugin/</guid><description>&lt;style type="text/css">
+pre[class] {
+max-height: 750px;
+}
+::-webkit-scrollbar {
+width: auto;
+}
+::-webkit-scrollbar-thumb {
+border-radius: 4px;
+background-color: rgba(255, 255, 255, .5);
+}
+.scrollable-element {
+}
+&lt;/style>
+&lt;br>
+&lt;p>Recently, I had the chance to revisit the topic of deep learning model inference. It made me realize that the tools and frameworks have evolved a lot.&lt;/p>
+&lt;p>At a quick glance, optimizing LLM inference is pretty different from optimizing a typical CNN model that I used to work on quite a long time ago.&lt;/p>
+&lt;p>My north star goal is to document how to optimize LLM model inference for modern GPUs and support data precision like FP8 and INT8. This will probably span a month. So with this, I will break down the plan into a few steps or posts:&lt;/p>
+&lt;ol>
+&lt;li>Understand the TensorRT plugin&lt;/li>
+&lt;li>Understand the computation &amp;amp; operations in LLM&lt;/li>
+&lt;li>Tools and landscape of optimizing LLM model inference&lt;/li>
+&lt;li>Optimize LLM model inference
+&lt;ul>
+&lt;li>Pick a popular LLM model&lt;/li>
+&lt;li>Optimize the inference; implement necessary custom op/CUDA kernel as necessary&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ol>
+&lt;br>
+&lt;h2 id="0-tensorrt-plugin">0) TensorRT Plugin&lt;/h2>
+&lt;p>To optimize model inference at a low level, we can identify operations in the graph that could be implemented as custom TensorRT plugins using CUDA kernels. This often requires replacing the operation in the ONNX graph with the custom plugin, which involves rewriting the ONNX graph.&lt;/p>
+&lt;p>In this section, I will dissect a simple operation called &lt;code>RoiAlign&lt;/code> and its TensorRT plugin implementation. I will document how we can use this custom op in ONNX file and run inference using TensorRT.&lt;/p>
+&lt;p>Specifically, I will:&lt;/p>
+&lt;ol>
+&lt;li>Implement a custom TensorRT plugin&lt;/li>
+&lt;li>Create an ONNX file with the custom operation&lt;/li>
+&lt;li>Run inference&lt;/li>
+&lt;/ol>
+&lt;br>
+&lt;h2 id="1-roialign-tensorrt-plugin">1) RoiAlign TensorRT plugin&lt;/h2>
+&lt;h3 id="implement-a-plugin-class">Implement a Plugin Class&lt;/h3>
+&lt;ul>
+&lt;li>Create a plugin class by deriving from &lt;code>IPluginV3&lt;/code>.&lt;/li>
+&lt;li>&lt;code>IPluginV3&lt;/code> must implement &lt;code>IPluginV3OneCore&lt;/code>, &lt;code>IPluginV3OneBuild&lt;/code>, and &lt;code>IPluginV3OneRuntime&lt;/code>.&lt;/li>
+&lt;/ul>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-cpp" data-lang="cpp">&lt;span class="line">&lt;span class="cl">&lt;span class="k">class&lt;/span> &lt;span class="nc">ROIAlignCustom&lt;/span> &lt;span class="o">:&lt;/span> &lt;span class="k">public&lt;/span> &lt;span class="n">IPluginV3&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">public&lt;/span> &lt;span class="n">IPluginV3OneCore&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">public&lt;/span> &lt;span class="n">IPluginV3OneBuild&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">public&lt;/span> &lt;span class="n">IPluginV3OneRuntime&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">public&lt;/span>&lt;span class="o">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">ROIAlignCustom&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="kt">int32_t&lt;/span> &lt;span class="n">outputHeight&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">outputWidth&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">samplingRatio&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mode&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">float&lt;/span> &lt;span class="n">spatialScale&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">aligned&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">ROIAlignCustom&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">ROIAlignCustom&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">&amp;amp;&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">default&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">~&lt;/span>&lt;span class="n">ROIAlignCustom&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">override&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">default&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">IPluginCapability&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getCapabilityInterface&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">PluginCapabilityType&lt;/span> &lt;span class="n">type&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">IPluginV3&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">clone&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getPluginName&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getPluginVersion&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getPluginNamespace&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="nf">getNbOutputs&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="nf">configurePlugin&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">DynamicPluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">in&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbInputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">DynamicPluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">out&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbOutputs&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">bool&lt;/span> &lt;span class="nf">supportsFormatCombination&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="kt">int32_t&lt;/span> &lt;span class="n">pos&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">DynamicPluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inOut&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbInputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbOutputs&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="nf">getOutputDataTypes&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">DataType&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">outputTypes&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbOutputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">DataType&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inputTypes&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbInputs&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="nf">getOutputShapes&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">DimsExprs&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inputs&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbInputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">DimsExprs&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">shapeInputs&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbShapeInputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">DimsExprs&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">outputs&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbOutputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">IExprBuilder&lt;/span>&lt;span class="o">&amp;amp;&lt;/span> &lt;span class="n">exprBuilder&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="nf">enqueue&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">PluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inputDesc&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">PluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">outputDesc&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">void&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inputs&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">void&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">outputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">void&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">workspace&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">cudaStream_t&lt;/span> &lt;span class="n">stream&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="nf">onShapeChange&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">PluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">in&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbInputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">PluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">out&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbOutputs&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">IPluginV3&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">attachToContext&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">IPluginResourceContext&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">context&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">PluginFieldCollection&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getFieldsToSerialize&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">size_t&lt;/span> &lt;span class="nf">getWorkspaceSize&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">DynamicPluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbInputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">DynamicPluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">outputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">nbOutputs&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">void&lt;/span> &lt;span class="nf">setPluginNamespace&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">libNamespace&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">private&lt;/span>&lt;span class="o">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mOutputHeight&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mOutputWidth&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mSamplingRatio&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">float&lt;/span> &lt;span class="n">mSpatialScale&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mMode&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mAligned&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mROICount&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mFeatureLength&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mHeight&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mWidth&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">mMaxThreadsPerBlock&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">std&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">string&lt;/span> &lt;span class="n">mNameSpace&lt;/span>&lt;span class="p">{};&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">std&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">nvinfer1&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">PluginField&lt;/span>&lt;span class="o">&amp;gt;&lt;/span> &lt;span class="n">mDataToSerialize&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">nvinfer1&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">PluginFieldCollection&lt;/span> &lt;span class="n">mFCToSerialize&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">};&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h3 id="implement-a-plugin-creator-class">Implement a Plugin Creator Class&lt;/h3>
+&lt;ul>
+&lt;li>To use a plugin in a network, we must register it with TensorRT’s &lt;code>PluginRegistry&lt;/code>. So we will have to follow the interface so that TensorRT knows about our plugin.&lt;/li>
+&lt;/ul>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-cpp" data-lang="cpp">&lt;span class="line">&lt;span class="cl">&lt;span class="k">class&lt;/span> &lt;span class="nc">ROIAlignCustomPluginCreator&lt;/span> &lt;span class="o">:&lt;/span> &lt;span class="k">public&lt;/span> &lt;span class="n">nvinfer1&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">IPluginCreatorV3One&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">public&lt;/span>&lt;span class="o">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">ROIAlignCustomPluginCreator&lt;/span>&lt;span class="p">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="o">~&lt;/span>&lt;span class="n">ROIAlignCustomPluginCreator&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">override&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">default&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getPluginName&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getPluginVersion&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">PluginFieldCollection&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getFieldNames&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">IPluginV3&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">createPlugin&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">name&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">PluginFieldCollection&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">fc&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">TensorRTPhase&lt;/span> &lt;span class="n">phase&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">void&lt;/span> &lt;span class="nf">setPluginNamespace&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">libNamespace&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">char&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="nf">getPluginNamespace&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="k">override&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">private&lt;/span>&lt;span class="o">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">static&lt;/span> &lt;span class="n">PluginFieldCollection&lt;/span> &lt;span class="n">mFC&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">static&lt;/span> &lt;span class="n">std&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">PluginField&lt;/span>&lt;span class="o">&amp;gt;&lt;/span> &lt;span class="n">mPluginAttributes&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">std&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">string&lt;/span> &lt;span class="n">mNamespace&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">};&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h3 id="notes">Notes&lt;/h3>
+&lt;ul>
+&lt;li>&lt;code>IPluginV3OneBuild::getNbOutput&lt;/code>&lt;/li>
+&lt;li>&lt;code>IPluginV3OneBuild::getOutputDataTypes&lt;/code>&lt;/li>
+&lt;li>&lt;code>IPluginV3OneBuild::getOutputShapes&lt;/code>&lt;/li>
+&lt;li>&lt;code>IPluginV3OneBuild::supportsFormatCombination&lt;/code>&lt;/li>
+&lt;li>&lt;code>IPluginV3OneBuild::configurePlugin&lt;/code>&lt;/li>
+&lt;li>&lt;code>IPluginV3OneRuntime::onShapeChange&lt;/code>&lt;/li>
+&lt;li>&lt;code>IPluginV3OneRuntime::enqueue&lt;/code>&lt;/li>
+&lt;/ul>
+&lt;br>
+&lt;h3 id="enqueue">enqueue&lt;/h3>
+&lt;p>&lt;code>IPluginV3OneRuntime::enqueue&lt;/code> is the function that gets called to execute the operation. The &lt;code>inputDesc&lt;/code> and &lt;code>outputDesc&lt;/code> are the tensor descriptor, the &lt;code>inputs&lt;/code> and &lt;code>outputs&lt;/code> are input and output tensors. The &lt;code>stream&lt;/code> is the stream that the kernel will execute.&lt;/p>
+&lt;p>Note how we need to handle the type in switch case and cast the tensors accordingly.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-cpp" data-lang="cpp">&lt;span class="line">&lt;span class="cl">&lt;span class="kt">int32_t&lt;/span> &lt;span class="n">ROIAlignCustom&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">enqueue&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">PluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inputDesc&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">PluginTensorDesc&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">outputDesc&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">void&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">inputs&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">void&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">outputs&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">void&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">workspace&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">cudaStream_t&lt;/span> &lt;span class="n">stream&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">noexcept&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// ...
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// No-op pass-through for empty ROIs
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">mROICount&lt;/span> &lt;span class="o">==&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">type&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">inputDesc&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">].&lt;/span>&lt;span class="n">type&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// ...
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">switch&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">type&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">case&lt;/span> &lt;span class="n">nvinfer1&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">DataType&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="nl">kFLOAT&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">bottomData&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">float&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">inputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">bottomRois&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">float&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">inputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">batchIndicesPtr&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">inputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">topData&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">float&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">outputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span> &lt;span class="n">RoiAlignImpl&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">float&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">stream&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mMaxThreadsPerBlock&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">bottomData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mSpatialScale&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">mROICount&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mFeatureLength&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mHeight&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mWidth&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mOutputHeight&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">mOutputWidth&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mSamplingRatio&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">bottomRois&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">topData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mMode&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">batchIndicesPtr&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mAligned&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span> &lt;span class="k">break&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">case&lt;/span> &lt;span class="n">nvinfer1&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="n">DataType&lt;/span>&lt;span class="o">::&lt;/span>&lt;span class="nl">kHALF&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">bottomData&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">__half&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">inputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">bottomRois&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">__half&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">inputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">batchIndicesPtr&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">inputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="n">topData&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">__half&lt;/span>&lt;span class="o">*&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">outputs&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">]);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span> &lt;span class="n">RoiAlignImpl&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">__half&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">stream&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mMaxThreadsPerBlock&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">bottomData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mSpatialScale&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">mROICount&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mFeatureLength&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mHeight&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mWidth&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mOutputHeight&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">mOutputWidth&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mSamplingRatio&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">bottomRois&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">topData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mMode&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">batchIndicesPtr&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">mAligned&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span> &lt;span class="k">break&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">default&lt;/span>&lt;span class="o">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span> &lt;span class="o">-&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h3 id="roialign-cuda-kernel">RoIAlign CUDA Kernel&lt;/h3>
+&lt;p>The is the low level interesting part: &lt;code>RoiAlignImpl&lt;/code> from the &lt;code>enqueue&lt;/code> function above launches the kernel &lt;code>RoIAlignForward&lt;/code>. I will get back to this part later if time allows.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-cpp" data-lang="cpp">&lt;span class="line">&lt;span class="cl">&lt;span class="k">template&lt;/span> &lt;span class="o">&amp;lt;&lt;/span>&lt;span class="k">typename&lt;/span> &lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">__global__&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="n">RoIAlignForward&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">nthreads&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">bottomData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">spatialScale&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">channels&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">height&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">width&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">pooledHeight&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">samplingRatio&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">bottomRois&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">T&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">topData&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">isModeAvg&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">batchIndicesPtr&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">aligned&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">size_t&lt;/span> &lt;span class="n">index&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">blockIdx&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">x&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">blockDim&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">x&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="n">threadIdx&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">x&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="n">index&lt;/span> &lt;span class="o">&amp;lt;&lt;/span> &lt;span class="n">nthreads&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">index&lt;/span> &lt;span class="o">+=&lt;/span> &lt;span class="n">blockDim&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">x&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">gridDim&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">x&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// (n, c, ph, pw) is an element in the pooled output
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">pw&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">index&lt;/span> &lt;span class="o">%&lt;/span> &lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">ph&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">index&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">%&lt;/span> &lt;span class="n">pooledHeight&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">c&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">index&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">pooledWidth&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">pooledHeight&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">%&lt;/span> &lt;span class="n">channels&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">n&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">index&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">pooledWidth&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">pooledHeight&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">channels&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">offsetBottomRois&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">bottomRois&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="n">n&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="mi">4&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">auto&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">roiBatchInd&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">batchIndicesPtr&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">n&lt;/span>&lt;span class="p">];&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">bool&lt;/span> &lt;span class="n">continuousCoordinate&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">aligned&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// Do not using rounding; this implementation detail is critical
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">T&lt;/span> &lt;span class="n">roiOffset&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">continuousCoordinate&lt;/span> &lt;span class="o">?&lt;/span> &lt;span class="mf">0.5&lt;/span> &lt;span class="o">:&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">roiStartW&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">offsetBottomRois&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">spatialScale&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">roiOffset&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">roiStartH&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">offsetBottomRois&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">spatialScale&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">roiOffset&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">roiEndW&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">offsetBottomRois&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">spatialScale&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">roiOffset&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">roiEndH&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">offsetBottomRois&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">3&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">spatialScale&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">roiOffset&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">roiWidth&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">roiEndW&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">roiStartW&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">roiHeight&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">roiEndH&lt;/span> &lt;span class="o">-&lt;/span> &lt;span class="n">roiStartH&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="o">!&lt;/span>&lt;span class="n">continuousCoordinate&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span> &lt;span class="c1">// backward compatiblity
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="c1">// Force malformed ROIs to be 1x1
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">roiWidth&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">floatMax&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiWidth&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mf">1.&lt;/span>&lt;span class="p">));&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">roiHeight&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">floatMax&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiHeight&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mf">1.&lt;/span>&lt;span class="p">));&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">binSizeH&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiHeight&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">pooledHeight&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">binSizeW&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiWidth&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">offsetBottomData&lt;/span> &lt;span class="o">=&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">bottomData&lt;/span> &lt;span class="o">+&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int32_t&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">((&lt;/span>&lt;span class="n">roiBatchInd&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">channels&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="n">c&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">height&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">width&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// We use roiBinGrid to sample the grid and mimic integral
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">roiBinGridH&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">samplingRatio&lt;/span> &lt;span class="o">&amp;gt;&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">roiBinGridH&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">samplingRatio&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span> &lt;span class="k">else&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">roiBinGridH&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">ceilf&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiHeight&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">pooledHeight&lt;/span>&lt;span class="p">));&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">roiBinGridW&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">samplingRatio&lt;/span> &lt;span class="o">&amp;gt;&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">roiBinGridW&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">samplingRatio&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span> &lt;span class="k">else&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">roiBinGridW&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">ceilf&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiWidth&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">));&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="c1">// We do average (integral) pooling inside a bin
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">count&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">roiBinGridH&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">roiBinGridW&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="c1">// e.g. = 4
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">yOff&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">roiStartH&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">ph&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">binSizeH&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">yFac&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">binSizeH&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiBinGridH&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">xOff&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">roiStartW&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">pw&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">binSizeW&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">xFac&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">binSizeW&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">roiBinGridW&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">outputVal&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="mf">0.&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">bool&lt;/span> &lt;span class="n">maxFlag&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="nb">false&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">for&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="kt">int32_t&lt;/span> &lt;span class="n">iy&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="n">iy&lt;/span> &lt;span class="o">&amp;lt;&lt;/span> &lt;span class="n">roiBinGridH&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="n">iy&lt;/span>&lt;span class="o">++&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="c1">// e.g., iy = 0, 1
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">y&lt;/span> &lt;span class="o">=&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">yOff&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">iy&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="mf">.5F&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">yFac&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="c1">// e.g., 0.5, 1.5
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="k">for&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="kt">int32_t&lt;/span> &lt;span class="n">ix&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="n">ix&lt;/span> &lt;span class="o">&amp;lt;&lt;/span> &lt;span class="n">roiBinGridW&lt;/span>&lt;span class="p">;&lt;/span> &lt;span class="n">ix&lt;/span>&lt;span class="o">++&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">x&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">xOff&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">ix&lt;/span> &lt;span class="o">+&lt;/span> &lt;span class="mf">.5F&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">xFac&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="n">val&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">bilinearInterpolate&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">offsetBottomData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">height&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">width&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">y&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">x&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">isModeAvg&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">index&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">isModeAvg&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">outputVal&lt;/span> &lt;span class="o">+=&lt;/span> &lt;span class="n">val&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span> &lt;span class="k">else&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="o">!&lt;/span>&lt;span class="n">maxFlag&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">outputVal&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">val&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">maxFlag&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="nb">true&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span> &lt;span class="k">else&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">outputVal&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">floatMax&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">outputVal&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">val&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">if&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">isModeAvg&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">outputVal&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">outputVal&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">count&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">topData&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">index&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">outputVal&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">template&lt;/span> &lt;span class="o">&amp;lt;&lt;/span>&lt;span class="k">typename&lt;/span> &lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">cudaError_t&lt;/span> &lt;span class="n">RoiAlignImpl&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">cudaStream_t&lt;/span> &lt;span class="n">stream&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">maxThreadsPerBlock&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">bottomData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">spatialScale&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">numRois&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">channels&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">height&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">width&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">pooledHeight&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">samplingRatio&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">T&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">bottomRois&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">T&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">topData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">isModeAvg&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">batchIndicesPtr&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">aligned&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="k">const&lt;/span> &lt;span class="n">outputSize&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">numRois&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">channels&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">pooledHeight&lt;/span> &lt;span class="o">*&lt;/span> &lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="kt">int32_t&lt;/span> &lt;span class="n">blocksPerGrid&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">int32_t&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">ceil&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="k">static_cast&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="kt">float&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">outputSize&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">/&lt;/span> &lt;span class="n">maxThreadsPerBlock&lt;/span>&lt;span class="p">));&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">RoIAlignForward&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">T&lt;/span>&lt;span class="o">&amp;gt;&amp;lt;&amp;lt;&amp;lt;&lt;/span>&lt;span class="n">blocksPerGrid&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">maxThreadsPerBlock&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">0&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">stream&lt;/span>&lt;span class="o">&amp;gt;&amp;gt;&amp;gt;&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">outputSize&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// nthreads
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">bottomData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// bottomData
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">spatialScale&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// spatialScale
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">channels&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// channels
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">height&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// height
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">width&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// width
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">pooledHeight&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// pooledHeight
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">pooledWidth&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// pooledWidth
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">samplingRatio&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// samplingRatio
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">bottomRois&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// bottomRois
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">topData&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// topData
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">isModeAvg&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// isModeAvg
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">batchIndicesPtr&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1">// batchIndicesPtr
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="n">aligned&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">return&lt;/span> &lt;span class="nf">cudaGetLastError&lt;/span>&lt;span class="p">();&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h3 id="generating-plugin-shared-library">Generating Plugin Shared Library&lt;/h3>
+&lt;p>TensorRT allows custom plugins to be registered either statically or dynamically. To create a plugin shared library, it must define the following public symbols:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-cpp" data-lang="cpp">&lt;span class="line">&lt;span class="cl">&lt;span class="k">extern&lt;/span> &lt;span class="s">&amp;#34;C&amp;#34;&lt;/span> &lt;span class="kt">void&lt;/span> &lt;span class="n">setLoggerFinder&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">ILoggerFinder&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">finder&lt;/span>&lt;span class="p">);&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">extern&lt;/span> &lt;span class="s">&amp;#34;C&amp;#34;&lt;/span> &lt;span class="n">IPluginCreator&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="o">*&lt;/span> &lt;span class="n">getCreators&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="kt">int32_t&lt;/span>&lt;span class="o">&amp;amp;&lt;/span> &lt;span class="n">nbCreators&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">const&lt;/span>&lt;span class="p">;&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>This is very common when writing the plugins; these entry points are required to interface with the framework, enabling it to manage the plugin correctly.&lt;/p>
+&lt;p>Let&amp;rsquo;s make sure that the generated shared library does have the symbols:&lt;/p>
+&lt;p>
+&lt;figure id="figure-the-generated-shared-library">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/051/01.png" alt="The generated shared library" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+The generated shared library
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure id="figure-nm--d-command-to-display-the-dynamic-symbols-of-a-shared-library">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/051/02.png" alt="`nm -D` command to display the dynamic symbols of a shared library" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+&lt;code>nm -D&lt;/code> command to display the dynamic symbols of a shared library
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="2-create-an-onnx-file-with-the-custom-operation">2) Create an ONNX File with the Custom Operation&lt;/h2>
+&lt;p>Replacing an operation in an ONNX graph with a custom one often requires rewriting the graph, typically with the help of the &lt;code>onnx_graphsurgeon&lt;/code> Python library. However, in this section, I will show how to create a simple ONNX graph that directly uses the custom operation.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">os&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">numpy&lt;/span> &lt;span class="k">as&lt;/span> &lt;span class="nn">np&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">onnx&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">onnx_graphsurgeon&lt;/span> &lt;span class="k">as&lt;/span> &lt;span class="nn">gs&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">input_tensor&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">gs&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Variable&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">name&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s1">&amp;#39;X&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">dtype&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="n">np&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">float32&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">shape&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">3&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">8&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">8&lt;/span>&lt;span class="p">])&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">rois_tensor&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">gs&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Variable&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">name&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s1">&amp;#39;rois&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">dtype&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="n">np&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">float32&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">shape&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">4&lt;/span>&lt;span class="p">])&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">batch_indices_tensor&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">gs&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Variable&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">name&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s1">&amp;#39;batch_indices&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">dtype&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="n">np&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">int32&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">shape&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">])&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">output_tensor&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">gs&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Variable&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">name&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s1">&amp;#39;Y&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">dtype&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="n">np&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">float32&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">shape&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">3&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="mi">2&lt;/span>&lt;span class="p">])&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">node_roialign&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">gs&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Node&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">op&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="s2">&amp;#34;ROIAlignCustom_TRT&amp;#34;&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">inputs&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">input_tensor&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">rois_tensor&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">batch_indices_tensor&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">outputs&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">output_tensor&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">attrs&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">{&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;mode&amp;#34;&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="mi">1&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="c1"># &amp;#39;avg&amp;#39; (1) or &amp;#39;max&amp;#39; (0)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;output_height&amp;#34;&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;output_width&amp;#34;&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;sampling_ratio&amp;#34;&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;spatial_scale&amp;#34;&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="mf">1.0&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">}&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">graph&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">gs&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Graph&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">nodes&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">node_roialign&lt;/span>&lt;span class="p">],&lt;/span> &lt;span class="n">inputs&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">input_tensor&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">rois_tensor&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">batch_indices_tensor&lt;/span>&lt;span class="p">],&lt;/span> &lt;span class="n">outputs&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">output_tensor&lt;/span>&lt;span class="p">])&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">model&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">gs&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">export_onnx&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">graph&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">onnx&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">save&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">model&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">os&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">path&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">join&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">output_dir&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="sa">f&lt;/span>&lt;span class="s2">&amp;#34;&lt;/span>&lt;span class="si">{&lt;/span>&lt;span class="n">output_name&lt;/span>&lt;span class="si">}&lt;/span>&lt;span class="s2">.onnx&amp;#34;&lt;/span>&lt;span class="p">))&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>At this point, we will have the following ONNX graph:&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/051/03.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="3-run-inference">3) Run Inference&lt;/h2>
+&lt;p>To build the TensorRT engine from the ONNX model containing custom operations, we will need to load the shared library for use with the builder.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">import&lt;/span> &lt;span class="nn">tensorrt&lt;/span> &lt;span class="k">as&lt;/span> &lt;span class="nn">trt&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">TRT_LOGGER&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">trt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Logger&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">trt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Logger&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">WARNING&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">PLUGIN_LIBRARY_PATH&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="s2">&amp;#34;path_to_plugin_shared_library.so&amp;#34;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">trt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">get_plugin_registry&lt;/span>&lt;span class="p">()&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">load_library&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">plugin_path&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="n">PLUGIN_LIBRARY_PATH&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">builder&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">trt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Builder&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">TRT_LOGGER&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">network&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">builder&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">create_network&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">parser&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">trt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">OnnxParser&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">network&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">TRT_LOGGER&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Importing a Model Using the ONNX Parser&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">if&lt;/span> &lt;span class="ow">not&lt;/span> &lt;span class="n">parser&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">parse_from_file&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">onnx_path&lt;/span>&lt;span class="p">):&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">raise&lt;/span> &lt;span class="ne">RuntimeError&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="s2">&amp;#34;Failed to parse ONNX file&amp;#34;&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># ...&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Building an Engine&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">config&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">builder&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">create_builder_config&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">serialized_engine&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">builder&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">build_serialized_network&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">network&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="n">config&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">with&lt;/span> &lt;span class="nb">open&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">os&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">path&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">join&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">output_dir&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="s2">&amp;#34;custom_op.engine&amp;#34;&lt;/span>&lt;span class="p">),&lt;/span> &lt;span class="s2">&amp;#34;wb&amp;#34;&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">as&lt;/span> &lt;span class="n">f&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">f&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">write&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">serialized_engine&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Deserializing a Plan&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">runtime&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">trt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Runtime&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">TRT_LOGGER&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">engine&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">runtime&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">deserialize_cuda_engine&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">serialized_engine&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Performing Inference&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># ...&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>We can add the code to check that the custom plugin we wrote is actually loaded:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="n">plugin_registry&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">trt&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">get_plugin_registry&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">for&lt;/span> &lt;span class="n">plugin_creator&lt;/span> &lt;span class="ow">in&lt;/span> &lt;span class="n">plugin_registry&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">all_creators&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="nb">print&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="sa">f&lt;/span>&lt;span class="s2">&amp;#34; name: &lt;/span>&lt;span class="si">{&lt;/span>&lt;span class="n">plugin_creator&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">name&lt;/span>&lt;span class="si">}&lt;/span>&lt;span class="s2">, version: &lt;/span>&lt;span class="si">{&lt;/span>&lt;span class="n">plugin_creator&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">plugin_version&lt;/span>&lt;span class="si">}&lt;/span>&lt;span class="s2">, namespace: &lt;/span>&lt;span class="si">{&lt;/span>&lt;span class="n">plugin_creator&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">plugin_namespace&lt;/span>&lt;span class="si">}&lt;/span>&lt;span class="s2">&amp;#34;&lt;/span>&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>
+&lt;figure id="figure-verify-that-the-plugin-is-loaded">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/051/04.png" alt="Verify that the plugin is loaded" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+Verify that the plugin is loaded
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html#extending" target="_blank" rel="noopener">https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html#extending&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://github.com/NVIDIA/TensorRT" target="_blank" rel="noopener">https://github.com/NVIDIA/TensorRT&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://erdem.pl/2020/02/understanding-region-of-interest-part-2-ro-i-align" target="_blank" rel="noopener">https://erdem.pl/2020/02/understanding-region-of-interest-part-2-ro-i-align&lt;/a>&lt;/li>
+&lt;/ul></description></item><item><title>MLOps Velocity Tool</title><link>https://witsblog.github.io/post/045_mlops_velocity/</link><pubDate>Wed, 27 Mar 2024 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/045_mlops_velocity/</guid><description>&lt;h2 id="ml-pipeline-automation">ML Pipeline Automation&lt;/h2>
+&lt;p>Google has a very interesting article written about the level of automation in ML pipeline.&lt;/p>
+&lt;p>
+&lt;figure id="figure-level-0">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/045/01.svg" alt="Level 0" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+Level 0
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure id="figure-level-2">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/045/03.svg" alt="Level 2" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+Level 2
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;h2 id="mlops----every-team-is-doing-things-differently">MLOps &amp;ndash; Every Team is Doing Things Differently&lt;/h2>
+&lt;p>In our team, we are pretty close to the level 2 as described by Google in their article. While we’ve adopted many of the principles described, we’ve made specific adjustments to better fit our use case.&lt;/p>
+&lt;p>&lt;strong>Key Differences&lt;/strong>&lt;/p>
+&lt;ol>
+&lt;li>
+&lt;p>Velocity Tool&lt;/p>
+&lt;ul>
+&lt;li>We developed a custom Velocity Tool to help business and data science teams iterate quickly on ideas and features. By standardizing the entire pipeline, we can automate all the tasks.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>
+&lt;p>Inference Integration&lt;/p>
+&lt;ul>
+&lt;li>We don&amp;rsquo;t run model inference as a separate service to avoid network latency caused by additional service calls. Instead, we write our own runtime that operates within the same backend service process.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ol>
+&lt;br>
+&lt;h2 id="the-velocity-tool">The Velocity Tool&lt;/h2>
+&lt;p>Typically, data scientists manually handle the model development steps:&lt;/p>
+&lt;ul>
+&lt;li>Data Preparation&lt;/li>
+&lt;li>Model Training&lt;/li>
+&lt;li>Model Evaluation&lt;/li>
+&lt;/ul>
+&lt;p>But imagine in a team where we have common business metrics that we measure and monitor consistenly, we can enforce these metrics as part of the model evaluation stage and streamline the process. This way, even business users can focus solely on providing features, while the tool automates the rest. Plus, we often win by iterating on features more than by changing the models. So the Velocity Tool would be beneficial.&lt;/p>
+&lt;p>Another problem is that: training (or backtesting) doesn&amp;rsquo;t mean the model would perform correctly and with a live production data. So we extend the ML pipeline by adding 2 stages:&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Sandbox Stage&lt;/strong>
+&lt;ul>
+&lt;li>This stage checks that the model performs correctly and doesn&amp;rsquo;t violate business rules. We can think of this as another form of backtesting. (We replay historical data through the model and collect metrics.)&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>A/B Experimentation Stage&lt;/strong>
+&lt;ul>
+&lt;li>This stage actually deploys and runs a model in production, using a small allocated traffic.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ul>
+&lt;p>Once the decision is made, users can select to deploy a model in production. Typically there are no code changes, so we can automate the deployment as well.&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/045/04.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>But how do we know if the model is performing well in production?&lt;/p>
+&lt;ul>
+&lt;li>For tasks where data can be labeled, it&amp;rsquo;s straignforward to sample the collected data, have a process to manually label it, and therefore measure model&amp;rsquo;s performance directly.&lt;/li>
+&lt;li>For tasks where there is no direct label, we have to use some metric as a proxy.&lt;/li>
+&lt;li>In some other tasks, we have to frame the problem as a reinforcement learning.&lt;/li>
+&lt;/ul>
+&lt;p>Our team is dealing with the later 2 cases, and it&amp;rsquo;s been a challenge for us to monitor the model performance.&lt;/p>
+&lt;br>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning" target="_blank" rel="noopener">https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://aws.amazon.com/what-is/mlops/" target="_blank" rel="noopener">https://aws.amazon.com/what-is/mlops/&lt;/a>&lt;/li>
+&lt;/ul></description></item><item><title>A Self-Served Feature Store with Feast</title><link>https://witsblog.github.io/post/023_feature_store/</link><pubDate>Sat, 20 May 2023 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/023_feature_store/</guid><description>&lt;br>
+&lt;p>Recently, feature stores have become essential in the MLOps stack, providing a centralized platform to serve features across training and serving enironments. In this post, I will explore how to run a self-served feature store, leveraging an open source project &lt;a href="https://github.com/feast-dev/feast" target="_blank" rel="noopener">Feast&lt;/a>.&lt;/p>
+&lt;br>
+&lt;h2 id="why">Why?&lt;/h2>
+&lt;ul>
+&lt;li>In our team, we have an application that needs to retrieve features for some ML application. At the time there was no feature store provided by the platform team, so we had to roll our own version.&lt;/li>
+&lt;li>Although Feast&amp;rsquo;s &lt;a href="https://github.com/feast-dev/feast/tree/master/sdk/python" target="_blank" rel="noopener">Python SDK&lt;/a> already provides a default implementation to interact with various backed databases for the online store, however, in our production setting, most of our backend applications are written in JVM language. So we need a JVM client library that retrieves features from the feature store.&lt;/li>
+&lt;/ul>
+&lt;br>
+&lt;h2 id="1-understanding-the-feature-store">1) Understanding the Feature Store&lt;/h2>
+&lt;p>In its simplest form, a &lt;strong>feature store&lt;/strong> is a key-value store that stores computed features for retrieval. &lt;a href="https://github.com/feast-dev/feast" target="_blank" rel="noopener">Feast&lt;/a> however is more like an ecosystem around a feature store; it consists of a few important components:&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Registry&lt;/strong>
+&lt;ul>
+&lt;li>An object store of feature definitions and their metadata.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>SDK&lt;/strong>
+&lt;ul>
+&lt;li>The library for interacting within the Feast ecosystem.&lt;/li>
+&lt;li>The client library for ingesting and retrieving features from a feature store.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>Offline Store&lt;/strong>
+&lt;ul>
+&lt;li>The storage that stores the ingested data, which is used for producing training datasets.&lt;/li>
+&lt;li>It supports working with historical time-series feature.&lt;/li>
+&lt;li>This is backed by a different storage and compute engine, for example, Spark, BigQuery, etc.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>Online Store&lt;/strong>
+&lt;ul>
+&lt;li>The storage that sores the lastest feature value, for online, low-latency retrieval.&lt;/li>
+&lt;li>This is usually backed by a low-latency database like Redis, Cassandra, etc.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>Online Serving Service / Feature Server&lt;/strong>
+&lt;ul>
+&lt;li>The service that serves online features from the online store.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ul>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/023/01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="2-customizing-the-online-store">2) Customizing the Online Store&lt;/h2>
+&lt;h3 id="21-default-grpc-feature-server">2.1) Default gRPC Feature Server&lt;/h3>
+&lt;p>The default feature server is implemented using the &lt;a href="https://grpc.io/" target="_blank" rel="noopener">gRPC&lt;/a> &lt;a href="https://grpc.io/docs/what-is-grpc/introduction/" target="_blank" rel="noopener">server&lt;/a>, starting with a Google dependency injection framework &lt;a href="https://github.com/google/guice" target="_blank" rel="noopener">Guice&lt;/a>, that creates a &lt;code>io.grpc.Server&lt;/code> instance.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">class&lt;/span> &lt;span class="nc">ServingGuiceApplication&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">{&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">public&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">static&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kt">void&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nf">main&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">String&lt;/span>&lt;span class="o">[]&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">args&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">throws&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">InterruptedException&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">IOException&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">{&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">Injector&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">Guice&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">createInjector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ServingServiceV2Module&lt;/span>&lt;span class="p">(),&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RegistryConfigModule&lt;/span>&lt;span class="p">(),&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">InstrumentationConfigModule&lt;/span>&lt;span class="p">(),&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ServerModule&lt;/span>&lt;span class="p">(),&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ApplicationPropertiesModule&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">args&lt;/span>&lt;span class="p">));&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">Server&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">server&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getInstance&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">Server&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">class&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">server&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">start&lt;/span>&lt;span class="p">();&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">server&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">awaitTermination&lt;/span>&lt;span class="p">();&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>The main logic of the serving service is implemented in the &lt;code>OnlineServingServiceV2&lt;/code> class that implements the gRPC service:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-proto" data-lang="proto">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">service&lt;/span> &lt;span class="n">ServingService&lt;/span> &lt;span class="p">{&lt;/span>&lt;span class="err">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="err">&lt;/span> &lt;span class="c1">// ...
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="err">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="err">&lt;/span> &lt;span class="c1">// Get online features synchronously.
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span> &lt;span class="k">rpc&lt;/span> &lt;span class="n">GetOnlineFeatures&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">GetOnlineFeaturesRequest&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="k">returns&lt;/span> &lt;span class="p">(&lt;/span>&lt;span class="n">GetOnlineFeaturesResponse&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="err">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="err">&lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="err">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>If we look at the constructor of this class, we will see that it uses an instance of &lt;code>OnlineRetriever&lt;/code> to interact with the backed database:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">class&lt;/span> &lt;span class="nc">OnlineServingServiceV2&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">implements&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ServingServiceV2&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">{&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">private&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">static&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">Logger&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">log&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">org&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">slf4j&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">LoggerFactory&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getLogger&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">OnlineServingServiceV2&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">class&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">private&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">Optional&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">Tracer&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">tracerOptional&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">private&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">OnlineRetriever&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">retriever&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">private&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RegistryRepository&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">registryRepository&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">private&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">OnlineTransformationService&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">onlineTransformationService&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">private&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">String&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">project&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">public&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nf">OnlineServingServiceV2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">OnlineRetriever&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">retriever&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">RegistryRepository&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">registryRepository&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">OnlineTransformationService&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">onlineTransformationService&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">String&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">project&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">Optional&lt;/span>&lt;span class="o">&amp;lt;&lt;/span>&lt;span class="n">Tracer&lt;/span>&lt;span class="o">&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">tracerOptional&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">{&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">this&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">retriever&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">retriever&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">this&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">registryRepository&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">registryRepository&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">this&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">onlineTransformationService&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">onlineTransformationService&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">this&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">project&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">project&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">this&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">tracerOptional&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">tracerOptional&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>This &lt;code>OnlineServingServiceV2&lt;/code> class is created during the dependency injection and the type of the &lt;code>OnlineRetriever&lt;/code> (and therefore the backed database) is selected at runtime. &lt;mark>If we are to use a different database such as Cassandra, ScyllaDB, etc, as a backed database for the online store, we will have to implement the code here&lt;/mark>:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">public&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">class&lt;/span> &lt;span class="nc">ServingServiceV2Module&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kd">extends&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">AbstractModule&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">{&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nd">@Provides&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">public&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ServingServiceV2&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nf">registryBasedServingServiceV2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">ApplicationProperties&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">applicationProperties&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">RegistryRepository&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">registryRepository&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">Tracer&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">tracer&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">{&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ServingServiceV2&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">servingService&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="kd">final&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ApplicationProperties&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">Store&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">store&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">applicationProperties&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getFeast&lt;/span>&lt;span class="p">().&lt;/span>&lt;span class="na">getActiveStore&lt;/span>&lt;span class="p">();&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">OnlineRetriever&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">retriever&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// TODO: Support more store types, and potentially use a plugin model here.&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">switch&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">store&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getType&lt;/span>&lt;span class="p">())&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">{&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">case&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">REDIS&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">RedisClientAdapter&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">redisClient&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RedisClient&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">create&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">store&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getRedisConfig&lt;/span>&lt;span class="p">());&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">retriever&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RedisOnlineRetriever&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">applicationProperties&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getFeast&lt;/span>&lt;span class="p">().&lt;/span>&lt;span class="na">getProject&lt;/span>&lt;span class="p">(),&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">redisClient&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">EntityKeySerializerV2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">applicationProperties&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getFeast&lt;/span>&lt;span class="p">().&lt;/span>&lt;span class="na">getEntityKeySerializationVersion&lt;/span>&lt;span class="p">()));&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">break&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">default&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">throw&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RuntimeException&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">String&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">format&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="s">&amp;#34;Unable to identify online store type: %s for Registry Backed Serving Service&amp;#34;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">store&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getType&lt;/span>&lt;span class="p">()));&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c1">// ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">servingService&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">new&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">OnlineServingServiceV2&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">retriever&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">registryRepository&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">onlineTransformationService&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">applicationProperties&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">getFeast&lt;/span>&lt;span class="p">().&lt;/span>&lt;span class="na">getProject&lt;/span>&lt;span class="p">(),&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">Optional&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">of&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">tracer&lt;/span>&lt;span class="p">));&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">return&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">servingService&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">}&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>This is the (incomplete) class diagram for &lt;code>OnlineServingServiceV2&lt;/code>; it shows some important parts that we have to implement in order to customize the feature server:&lt;/p>
+&lt;div class="mermaid">classDiagram
+class OnlineServingServiceV2 {
+- OnlineRetriever retriever
+- RegistryRepository registryRepository
+- OnlineTransformationService onlineTransformationService
++ GetFeastServingInfoResponse getFeastServingInfo(...)
++ GetOnlineFeaturesResponse getOnlineFeatures(...)
+}
+class OnlineRetriever
+class RegistryRepository {
+- Registry registry
+- RegistryFile registryFile
+}
+class OnlineTransformationService
+class OnlineRetriever {
++ getOnlineFeatures(...)
+}
+class RedisOnlineRetriever
+class CassandraOnlineRetriever
+class RegistryFile {
++ getContent()
++ getContentIfModified()
+}
+class S3RegistryFile
+class GSRegistryFile
+OnlineServingServiceV2 o-- OnlineRetriever
+OnlineServingServiceV2 o-- RegistryRepository
+OnlineServingServiceV2 o-- OnlineTransformationService
+RegistryRepository o-- RegistryFile
+OnlineRetriever &lt;|.. RedisOnlineRetriever
+OnlineRetriever &lt;|.. CassandraOnlineRetriever
+RegistryFile &lt;|.. S3RegistryFile
+RegistryFile &lt;|.. GSRegistryFile
+&lt;/div>
+&lt;br>
+&lt;h3 id="22-feast--scylladb">2.2) Feast + ScyllaDB&lt;/h3>
+&lt;p>We choose ScyllaDB for the online store.&lt;/p>
+&lt;p>With ScyllaDB, the schema looks like this:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">keyspace_name&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">feature_set&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">entity_key&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">TEXT&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">feature_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">TEXT&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">value&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">BLOB&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">event_ts&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TIMESTAMP&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">created_ts&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TIMESTAMP&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">PRIMARY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">KEY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">((&lt;/span>&lt;span class="n">entity_key&lt;/span>&lt;span class="p">),&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">feature_name&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">WITH&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">CLUSTERING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">feature_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ASC&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Scylla online retriever implementation&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="c1">// ScyllaOnlineRetriever&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;h3 id="23-client-library-with-client-side-load-balancing">2.3) Client Library with Client Side Load Balancing&lt;/h3>
+&lt;p>After setting up the gRPC &lt;strong>feature server&lt;/strong>, we implement a JVM-based client library for retriving the features. The library integrates &lt;strong>client-side load balancing&lt;/strong> to optimize for performance and to ensure low-latency responses.&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/023/03.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>In gRPC, client-side load balancing can be achieved by creating a Kubernetes &lt;a href="https://kubernetes.io/docs/concepts/services-networking/service/#headless-services" target="_blank" rel="noopener">headless service&lt;/a> to expose all replicas as DNS entry, allowing the client to distribute requests across them:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-yaml" data-lang="yaml">&lt;span class="line">&lt;span class="cl">&lt;span class="nt">apiVersion&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">v1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">kind&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">Service&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">metadata&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">name&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">grpc-server-java-service&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">spec&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">type&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">ClusterIP&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">selector&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">app&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">server-grpc-java&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">clusterIP&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">None&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">ports&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="nt">port&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="m">50051&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">targetPort&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="m">50051&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Then in the client library, we set:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-java" data-lang="java">&lt;span class="line">&lt;span class="cl">&lt;span class="n">String&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">target&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s">&amp;#34;grpc-server-java-service.default.svc.cluster.local:50051&amp;#34;&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="n">ManagedChannel&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">channel&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">Grpc&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">newChannelBuilder&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">target&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">InsecureChannelCredentials&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">create&lt;/span>&lt;span class="p">())&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">defaultLoadBalancingPolicy&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="s">&amp;#34;round_robin&amp;#34;&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="na">build&lt;/span>&lt;span class="p">();&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>To verify that client-side load balancing does actyally work, we first deploy a set of gRPC feature servers in a Kubernetes cluster with 3 replicas. Afterward, we deploy a client application that uses the client library to distribute requests across these replicas.&lt;/p>
+&lt;p>
+&lt;figure id="figure-4-pods-3-from-grpc-feature-server-1-from-client-code">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/023/04.png" alt="4 pods; 3 from gRPC feature server, 1 from client code" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+4 pods; 3 from gRPC feature server, 1 from client code
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure id="figure-we-can-see-that-the-response-comes-from-3-different-pods-in-the-k8s-cluster">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/023/05.png" alt="We can see that the response comes from 3 different pods in the k8s cluster" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+We can see that the response comes from 3 different pods in the k8s cluster
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://docs.feast.dev/" target="_blank" rel="noopener">https://docs.feast.dev/&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://grpc.io/" target="_blank" rel="noopener">https://grpc.io/&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://kubernetes.io/docs/concepts/services-networking/service/#headless-services" target="_blank" rel="noopener">https://kubernetes.io/docs/concepts/services-networking/service/#headless-services&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://github.com/grpc/grpc/blob/master/doc/load-balancing.md" target="_blank" rel="noopener">https://github.com/grpc/grpc/blob/master/doc/load-balancing.md&lt;/a>&lt;/li>
+&lt;/ul>
+&lt;br></description></item><item><title>Continuous Training with TFX and Kubeflow Pipelines</title><link>https://witsblog.github.io/post/012_tfx_google_ai_platform/</link><pubDate>Sun, 10 Oct 2021 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/012_tfx_google_ai_platform/</guid><description>&lt;p>In this post I will be exploring the TFX and its integration with Kubeflow Pipelines on Google AI Platform.&lt;/p>
+&lt;p>This post is kind of my summarization for my learning purpose.&lt;/p>
+&lt;h2 id="1-dataset">1) Dataset&lt;/h2>
+&lt;h2 id="2-create-clusters">2) Create Clusters&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/04.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/05.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/06.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="3-understanding-tfx-pipelines">3) Understanding TFX Pipelines&lt;/h2>
+&lt;p>In order to understand TFX pipelines, we need to understand some keywords. For full tutorial, refer to TensorFlow&amp;rsquo;s article &lt;a href="https://www.tensorflow.org/tfx/guide/understanding_tfx_pipelines" target="_blank" rel="noopener">here&lt;/a>.&lt;/p>
+&lt;h3 id="artifact">Artifact&lt;/h3>
+&lt;p>Artifacts are the output of the steps in a TFX pipeline. They can be used by subsequent steps in the pipeline.&lt;/p>
+&lt;p>Artifacts must be stongly typed with an &lt;strong>artifact type&lt;/strong> registered in the &lt;a href="https://www.tensorflow.org/tfx/guide/mlmd" target="_blank" rel="noopener">ML Metadata&lt;/a> store. This point is not very clear yet; I need to research and will come back to expand more on this later.&lt;/p>
+&lt;p>Questions&lt;/p>
+&lt;ul>
+&lt;li>Where does artifact get stored?&lt;/li>
+&lt;li>What needs to be changed if we run the pipeline on a Cloud?&lt;/li>
+&lt;/ul>
+&lt;h3 id="parameter">Parameter&lt;/h3>
+&lt;p>Parameters are something that we can set through configuration, instead of hard coding; they are just like the hyperparameters of a ML/DL model.&lt;/p>
+&lt;h3 id="component">Component&lt;/h3>
+&lt;p>Component is an implementation of the task in our pipeline. Components in TFX are composed of&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Component specification&lt;/strong>: This defines the component&amp;rsquo;s input and output artifacts, and component&amp;rsquo;s parameters.&lt;/li>
+&lt;li>&lt;strong>Executor&lt;/strong>: This implements the real work of a step in the pipeline.&lt;/li>
+&lt;li>&lt;strong>Component interface&lt;/strong>: This packages the component specification and executor for use in a pipeline. (This is not very clear.)&lt;/li>
+&lt;/ul>
+&lt;p>Questions&lt;/p>
+&lt;ul>
+&lt;li>Where does the component get run?&lt;/li>
+&lt;li>Do components run in the same environment? Same OS and same dependencies?&lt;/li>
+&lt;li>What if each component requires different dependencies?&lt;/li>
+&lt;/ul>
+&lt;h3 id="pipeline">Pipeline&lt;/h3>
+&lt;p>TensorFlow says that a TFX pipeline is a &lt;em>&lt;strong>portable&lt;/strong>&lt;/em> implementation of an ML workflow, as it can be run on different ochestrators, such as: Apache Airflow, Apache Beam, and Kubeflow Pipelines.&lt;/p>
+&lt;p>First, we build a pipeline, which is of type &lt;code>tfx.orchestration.pipeline.Pipeline&lt;/code>:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">pipeline&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">def&lt;/span> &lt;span class="nf">_create_pipeline&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="n">pipeline&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">Pipeline&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;&amp;#34;&amp;#34;
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="s2"> &amp;#34;&amp;#34;&amp;#34;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">pass&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>To select a different ochestration tool, we need to import from &lt;code>tfx.orchestration&lt;/code> module.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Airflow&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.airflow.airflow_dag_runner&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">AirflowDagRunner&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.airflow.airflow_dag_runner&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">AirflowPipelineConfig&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">DAG&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">AirflowDagRunner&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">AirflowPipelineConfig&lt;/span>&lt;span class="p">())&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">run&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">_create_pipeline&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="c1"># Kubeflow&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="kn">from&lt;/span> &lt;span class="nn">tfx.orchestration.kubeflow&lt;/span> &lt;span class="kn">import&lt;/span> &lt;span class="n">kubeflow_dag_runner&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">kubeflow_dag_runner&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">KubeflowDagRunner&lt;/span>&lt;span class="p">()&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">run&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">create_pipeline&lt;/span>&lt;span class="p">()&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="p">)&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h2 id="4-tfx-custom-components">4) TFX Custom Components&lt;/h2>
+&lt;p>Understanding the custom components will get us far! Refer to TensorFlow&amp;rsquo;s article &lt;a href="https://www.tensorflow.org/tfx/guide/understanding_custom_components" target="_blank" rel="noopener">here&lt;/a>.&lt;/p>
+&lt;h3 id="tfx-components-at-runtime">TFX components at runtime&lt;/h3>
+&lt;blockquote>
+&lt;p>When a pipeline runs a TFX component, the component is executed in three phases:&lt;/p>
+&lt;ol>
+&lt;li>First, the Driver uses the component specification to retrieve the required artifacts from the metadata store and pass them into the component.&lt;/li>
+&lt;li>Next, the Executor performs the component&amp;rsquo;s work.&lt;/li>
+&lt;li>Then the Publisher uses the component specification and the results from the executor to store the component&amp;rsquo;s outputs in the metadata store.&lt;/li>
+&lt;/ol>
+&lt;/blockquote>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/component.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;h3 id="types-of-custom-components">Types of custom components&lt;/h3>
+&lt;ol>
+&lt;li>
+&lt;p>&lt;strong>Python function-based&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>The specification is completely defined in the Python code.&lt;/li>
+&lt;li>The function&amp;rsquo;s arguments with type annotations describe input artifact, output artifact, and parameters.&lt;/li>
+&lt;li>The function&amp;rsquo;s body defines the component&amp;rsquo;s executor.&lt;/li>
+&lt;li>The component interface is dedined by adding &lt;code>@component&lt;/code> decorator.&lt;/li>
+&lt;/ul>
+&lt;br>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="nd">@component&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">def&lt;/span> &lt;span class="nf">MyComponent&lt;/span>&lt;span class="p">(&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">model&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">InputArtifact&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">Model&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">output&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">OutputArtifact&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">Model&lt;/span>&lt;span class="p">],&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">threshold&lt;/span>&lt;span class="p">:&lt;/span> &lt;span class="n">Parameter&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">]&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="mi">10&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="p">)&lt;/span> &lt;span class="o">-&amp;gt;&lt;/span> &lt;span class="n">OutputDict&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">accuracy&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="nb">float&lt;/span>&lt;span class="p">):&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="s2">&amp;#34;&amp;#34;&amp;#34;
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="s2"> &amp;#34;&amp;#34;&amp;#34;&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="k">pass&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;/li>
+&lt;li>
+&lt;p>&lt;strong>Container-based&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>This is suitable for building a component with custom runtime environment and dependencies.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>
+&lt;p>&lt;strong>Fully custom&lt;/strong> components&lt;/p>
+&lt;ul>
+&lt;li>This is for building a component that is not in the built-in TFX standard components.&lt;/li>
+&lt;li>It lets us build a component by implementing a custom &lt;em>component specification&lt;/em>, &lt;em>executor&lt;/em>, and &lt;em>component interface&lt;/em> classes.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ol>
+&lt;h2 id="5-code">5) Code&lt;/h2>
+&lt;br>
+&lt;h2 id="6-pipeline-dashboard">6) Pipeline Dashboard&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/10.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/11.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/13.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/15_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/16_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/17_1.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/17_2.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="7-dataflow">7) Dataflow&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/19.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/20.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/21.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/22.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/012/24.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="my-thoughts">My Thoughts&lt;/h2>
+&lt;ul>
+&lt;li>TFX seems to be built around TensorFlow. Not very sure if it’s gonna work with other DL/ML libraries without heavily modifying the TFX components. But if we are in a Google Cloud/TensorFlow ecosystem, stick with it!&lt;/li>
+&lt;li>Unlike TFX, &lt;a href="https://mlflow.org/" target="_blank" rel="noopener">MLFlow&lt;/a> seems to be more general and more open to other DL/ML libraries.&lt;/li>
+&lt;/ul>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://www.tensorflow.org/tfx/tutorials" target="_blank" rel="noopener">https://www.tensorflow.org/tfx/tutorials&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://www.tensorflow.org/tfx/guide/mlmd" target="_blank" rel="noopener">https://www.tensorflow.org/tfx/guide/mlmd&lt;/a>&lt;/li>
+&lt;/ul></description></item></channel></rss>
