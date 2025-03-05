@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Platform | Wit's Blog</title><link>https://witsblog.github.io/tag/platform/</link><atom:link href="https://witsblog.github.io/tag/platform/index.xml" rel="self" type="application/rss+xml"/><description>Platform</description><generator>Wowchemy (https://wowchemy.com)</generator><language>en-us</language><lastBuildDate>Wed, 27 Mar 2024 00:00:00 +0000</lastBuildDate><image><url>https://witsblog.github.io/media/icon_hu66cf44b0d2eab4dae9de00f68d847da7_1567_512x512_fill_lanczos_center_3.png</url><title>Platform</title><link>https://witsblog.github.io/tag/platform/</link></image><item><title>MLOps Velocity Tool</title><link>https://witsblog.github.io/post/045_mlops_velocity/</link><pubDate>Wed, 27 Mar 2024 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/045_mlops_velocity/</guid><description>&lt;h2 id="ml-pipeline-automation">ML Pipeline Automation&lt;/h2>
+&lt;p>Google has a very interesting article written about the level of automation in ML pipeline.&lt;/p>
+&lt;p>
+&lt;figure id="figure-level-0">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/045/01.svg" alt="Level 0" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+Level 0
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;p>
+&lt;figure id="figure-level-2">
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/045/03.svg" alt="Level 2" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;figcaption>
+Level 2
+&lt;/figcaption>&lt;/figure>
+&lt;/p>
+&lt;h2 id="mlops----every-team-is-doing-things-differently">MLOps &amp;ndash; Every Team is Doing Things Differently&lt;/h2>
+&lt;p>In our team, we are pretty close to the level 2 as described by Google in their article. While we’ve adopted many of the principles described, we’ve made specific adjustments to better fit our use case.&lt;/p>
+&lt;p>&lt;strong>Key Differences&lt;/strong>&lt;/p>
+&lt;ol>
+&lt;li>
+&lt;p>Velocity Tool&lt;/p>
+&lt;ul>
+&lt;li>We developed a custom Velocity Tool to help business and data science teams iterate quickly on ideas and features. By standardizing the entire pipeline, we can automate all the tasks.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>
+&lt;p>Inference Integration&lt;/p>
+&lt;ul>
+&lt;li>We don&amp;rsquo;t run model inference as a separate service to avoid network latency caused by additional service calls. Instead, we write our own runtime that operates within the same backend service process.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ol>
+&lt;br>
+&lt;h2 id="the-velocity-tool">The Velocity Tool&lt;/h2>
+&lt;p>Typically, data scientists manually handle the model development steps:&lt;/p>
+&lt;ul>
+&lt;li>Data Preparation&lt;/li>
+&lt;li>Model Training&lt;/li>
+&lt;li>Model Evaluation&lt;/li>
+&lt;/ul>
+&lt;p>But imagine in a team where we have common business metrics that we measure and monitor consistenly, we can enforce these metrics as part of the model evaluation stage and streamline the process. This way, even business users can focus solely on providing features, while the tool automates the rest. Plus, we often win by iterating on features more than by changing the models. So the Velocity Tool would be beneficial.&lt;/p>
+&lt;p>Another problem is that: training (or backtesting) doesn&amp;rsquo;t mean the model would perform correctly and with a live production data. So we extend the ML pipeline by adding 2 stages:&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Sandbox Stage&lt;/strong>
+&lt;ul>
+&lt;li>This stage checks that the model performs correctly and doesn&amp;rsquo;t violate business rules. We can think of this as another form of backtesting. (We replay historical data through the model and collect metrics.)&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>A/B Experimentation Stage&lt;/strong>
+&lt;ul>
+&lt;li>This stage actually deploys and runs a model in production, using a small allocated traffic.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ul>
+&lt;p>Once the decision is made, users can select to deploy a model in production. Typically there are no code changes, so we can automate the deployment as well.&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/045/04.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>But how do we know if the model is performing well in production?&lt;/p>
+&lt;ul>
+&lt;li>For tasks where data can be labeled, it&amp;rsquo;s straignforward to sample the collected data, have a process to manually label it, and therefore measure model&amp;rsquo;s performance directly.&lt;/li>
+&lt;li>For tasks where there is no direct label, we have to use some metric as a proxy.&lt;/li>
+&lt;li>In some other tasks, we have to frame the problem as a reinforcement learning.&lt;/li>
+&lt;/ul>
+&lt;p>Our team is dealing with the later 2 cases, and it&amp;rsquo;s been a challenge for us to monitor the model performance.&lt;/p>
+&lt;br>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning" target="_blank" rel="noopener">https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://aws.amazon.com/what-is/mlops/" target="_blank" rel="noopener">https://aws.amazon.com/what-is/mlops/&lt;/a>&lt;/li>
+&lt;/ul></description></item><item><title>Pricing Experimentation</title><link>https://witsblog.github.io/post/038_pricing_experiment/</link><pubDate>Sat, 13 Jan 2024 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/038_pricing_experiment/</guid><description>&lt;p>In the world of e-commerce, hundreds of pricing strategies or campaigns are being run simultaneously. But how do these campaigns get validated and tested before rolling out to the users? &amp;ndash; &lt;strong>Experimentation&lt;/strong>&lt;/p>
+&lt;p>Experimentation allows teams to test and validate ideas quickly, from frontend changes to backend logic changes. It allows us to experiment with different variables and measure their impact.&lt;/p>
+&lt;p>In this blog post, let&amp;rsquo;s take &amp;ldquo;pricing strategies&amp;rdquo; as an example.&lt;/p>
+&lt;br>
+&lt;h2 id="requirements">Requirements&lt;/h2>
+&lt;ul>
+&lt;li>Business users should be able to create and manage pricing campaigns.&lt;/li>
+&lt;li>Campaigns should target specific user segments (e.g., mobile users, users from specific regions).&lt;/li>
+&lt;li>The campaign &amp;amp; experimentation process needs an approval process.&lt;/li>
+&lt;li>Real-time monitoring is crucial to pause campaigns if negative impacts are detected.&lt;/li>
+&lt;/ul>
+&lt;p>&lt;strong>Functional Requirements&lt;/strong>&lt;/p>
+&lt;ul>
+&lt;li>Internal UI tool for managing campaigns &amp;amp; experiments.&lt;/li>
+&lt;li>Support for tartgeting user segments.&lt;/li>
+&lt;li>Support different types of allocation strategies (e.g., by user ID, device ID, or time-based).&lt;/li>
+&lt;li>Real-time data collection, monitoring, and analysis.&lt;/li>
+&lt;/ul>
+&lt;p>&lt;strong>Non-functional Requirements&lt;/strong>&lt;/p>
+&lt;ul>
+&lt;li>Scalability to handle large data sets and high traffic.&lt;/li>
+&lt;li>High availability.
+&lt;ul>
+&lt;li>The platform must remain operational, as downtime could disrupt the variant allocation process and skew analysis results.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>Low latency for real-time response&lt;/li>
+&lt;/ul>
+&lt;br>
+&lt;h2 id="campaigns-allocation--experimentation">Campaigns, Allocation, &amp;amp; Experimentation&lt;/h2>
+&lt;p>Campaign is usually a business rule (or it can be a machine learning model rule) that applies certain pricing strategies. The campaign should be able to target specific user segments, for example, users from mobile device, users browsing from Singapore, etc.&lt;/p>
+&lt;p>In A/B testing, we create an experiment with 2 groups (&lt;strong>variants&lt;/strong>):&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Control group&lt;/strong> (A)
+&lt;ul>
+&lt;li>This group experiences the standard behavior, as same as others not targetted by the experiment.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>Experimental group&lt;/strong> (B)
+&lt;ul>
+&lt;li>This group experiences a special treatment.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;/ul>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/038/01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>By comparing business metrics across both groups, we can assess the experiment&amp;rsquo;s impact.&lt;/p>
+&lt;p>But how do we assign users to variants? This process is called &lt;strong>allocation&lt;/strong>. Given an incoming request with context information, we assign the request to either variant A or B. Depending on the experiment’s needs, different &lt;strong>allocation strategy&lt;/strong> can be used.&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/038/02.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="high-level-architecture">High-Level Architecture&lt;/h2>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/post/038_pricing_experiment/featured.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;br>
+&lt;h2 id="integrating-experiments-in-the-code">Integrating Experiments in the Code&lt;/h2>
+&lt;p>To integrate an experiment in the code, it typically looks like this:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-python" data-lang="python">&lt;span class="line">&lt;span class="cl">&lt;span class="n">request&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="c1"># ...&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="n">ctx&lt;/span> &lt;span class="o">=&lt;/span> &lt;span class="n">get_context&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">request&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="c1"># Get additional contexts&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">if&lt;/span> &lt;span class="n">other_condition&lt;/span> &lt;span class="ow">and&lt;/span> &lt;span class="n">experiment_client&lt;/span>&lt;span class="o">.&lt;/span>&lt;span class="n">determine_variant&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">ctx&lt;/span>&lt;span class="p">,&lt;/span> &lt;span class="s2">&amp;#34;EXPERIMENT-ID&amp;#34;&lt;/span>&lt;span class="p">)&lt;/span> &lt;span class="o">==&lt;/span> &lt;span class="s2">&amp;#34;B&amp;#34;&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plan_b&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="c1"># B, Experimental group&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="k">else&lt;/span>&lt;span class="p">:&lt;/span>
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> &lt;span class="n">plan_a&lt;/span>&lt;span class="p">()&lt;/span> &lt;span class="c1"># A, Control group&lt;/span>
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>However, in pricing strategies where hundreds of campaigns may be running simultaneously, it&amp;rsquo;s a little more complicated than this.&lt;/p>
+&lt;p>When a request comes in, we first need to identify all the relevant experiments the request is part of (within the targeted segment). Once we know the experiments, we can retrieve the associated campaigns and apply the appropriate pricing strategies defined by the campaigns.&lt;/p>
+&lt;p>This typically involves a &lt;strong>rule engine&lt;/strong> that evaluates the request&amp;rsquo;s context to determine the relevant experiments. To maintain real-time performance, heavy &lt;a href="https://witsblog.github.io/post/020_caif/">&lt;strong>caching&lt;/strong>&lt;/a> is required—running the rule engine for every single request would introduce significant latency.&lt;/p>
+&lt;br>
+&lt;h2 id="references">References&lt;/h2>
+&lt;br></description></item><item><title>Detecting Performance Degradation in CI/CD Pipeline</title><link>https://witsblog.github.io/post/033_performance_ci/</link><pubDate>Sat, 16 Dec 2023 00:00:00 +0000</pubDate><guid>https://witsblog.github.io/post/033_performance_ci/</guid><description>&lt;h2 id="why">Why?&lt;/h2>
+&lt;p>We want to identify any performance degradation before merging code changes into the production environment. Imagine there is a pull request changing some critical logic in the code in a way that increases latency of a backend service by a lot, and this is detected after deployed to the production!&lt;/p>
+&lt;br>
+&lt;h2 id="the-testing-setup">The Testing Setup&lt;/h2>
+&lt;p>So the basic idea of performance regresssion test is to compare the performance between 2 instances of a backend application; 1 from the baseline (curerntly in production build) and another from the candidate build triggered by a pull request (PR) or a merge request (MR).&lt;/p>
+&lt;p>
+&lt;figure >
+&lt;div class="d-flex justify-content-center">
+&lt;div class="w-100" >&lt;img src="https://witsblog.github.io/images/post/033/01.png" alt="" loading="lazy" data-zoomable />&lt;/div>
+&lt;/div>&lt;/figure>
+&lt;/p>
+&lt;p>We also want to ensure the fairness of the test, so the baseline and the candidate versions will be deployed in isolated environment. For this, Kubernetes &lt;a href="https://witsblog.github.io/post/020_k8s_cpu_limit/#should-we-set-the-cpu-limit">CPU Limit&lt;/a> can be used.&lt;/p>
+&lt;p>We can also use tools like &lt;a href="https://k6.io/" target="_blank" rel="noopener">k6&lt;/a> to run the performance test.&lt;/p>
+&lt;br>
+&lt;h2 id="the-gitlab-ciyml">The &lt;code>.gitlab-ci.yml&lt;/code>&lt;/h2>
+&lt;br>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-yaml" data-lang="yaml">&lt;span class="line">&lt;span class="cl">&lt;span class="nt">stages&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="l">docker&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="l">manual&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">app_docker&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">docker&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">script&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># Build docker image&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">artifacts&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">paths&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">performance_regression_test&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">manual&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">extends&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">allow_failure&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="kc">true&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">needs&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="nt">job&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">app_docker&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">variables&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">trigger&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">include&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="nt">local&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">.ci/pipelinees/performance_test/pipeline.yaml&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">strategy&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">depend&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">resource_group&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-yaml" data-lang="yaml">&lt;span class="line">&lt;span class="cl">&lt;span class="c"># .ci/pipelinees/performance_test/pipeline.yaml&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">stages&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="l">test setup&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c"># Prepare sample requests, build test runner, deploy baseline &amp;amp; candidate to Kubernetes&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="l">perf test&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c"># Run the perf test by firing requests to the baseline &amp;amp; candidate&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="l">cleanup&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c"># Clean up the Kubernetes resource&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="l">analyze&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c"># Analyze the result, &lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">workflow&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">rules&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="nt">if&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">$CI_MERGE_REQUEST_ID&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>- &lt;span class="nt">if&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">deploy_baseline&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">test setup&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">deploy_candidate&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">test setup&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">perf_test_baseline&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">perf test&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">perf_test_candidate&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">perf test&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">cleanup_baseline&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">cleanup&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">cleanup_candidate&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">cleanup&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># ...&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="nt">analyze_result&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">stage&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="l">analyze&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="nt">script&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="c"># Analyze the result&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;br>
+&lt;h2 id="references">References&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://grafana.com/blog/2021/01/27/k6-vs-jmeter-comparison/" target="_blank" rel="noopener">https://grafana.com/blog/2021/01/27/k6-vs-jmeter-comparison/&lt;/a>&lt;/li>
+&lt;/ul></description></item></channel></rss>
